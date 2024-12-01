@@ -1,24 +1,45 @@
 from typing import Optional
 import random
 import math
+import json
+import requests
+from dataclasses import dataclass
+
+
+@dataclass
+class Peer():
+    ip: str
+    port: int
+
+    def __repr__(self):
+        return f"PEER: {self.ip}:{self.port}"
 
 
 class RouteTable():
     def __init__(self, table_size: int, uuid: int) -> None:
         self._table_size = table_size
-        self._route_table = [None] * table_size
+        self._table: list[Optional[Peer]] = [None] * table_size
 
         # The uuid of this node.
         # Since the routing table represents the distance from this node we need to calculate the offset
         self._uuid = uuid
 
     def __repr__(self):
-        out = []
-        out.append(f"ROUTE_TABLE({2**self._table_size})")
-        out.append("INDEX  UUID  NODE")
-        for i, n in enumerate(self._route_table):
-            uuid = (self._uuid + 2**i) % 2**self._table_size
-            out.append(f"{i:>5}   {uuid:>03}  {n}")
+        out = [(f"ROUTE_TABLE ({2**self._table_size})")]
+
+        uuids = ["UUID"]
+        uuids += [str((self._uuid + 2**i) % 2**self._table_size) for i in range(0, self._table_size)]
+        uuids_rjust = max(len(x) for x in uuids)
+        uuids = [x.rjust(uuids_rjust) for x in uuids]
+
+        ids = ["INDEX"]
+        ids += [str(x) for x in range(self._table_size)]
+        i_rjust = max(len(x) for x in ids)
+        ids = [x.rjust(i_rjust) for x in ids]
+
+        for uuid, id, peer in zip(uuids, ids, self._table):
+            out.append(f"{id}  {uuid}  {peer}")
+
         return "\n".join(out)
 
     def get_distance(self, uuid: int):
@@ -37,7 +58,7 @@ class RouteTable():
         """ Convert distance to index of node in routing table """
         return int(math.log2(distance))
 
-    def get_nearest_node(self, uuid: int):
+    def get_nearest_node(self, uuid: int) -> Optional[Peer]:
         """ Return known node that's nearest to requested node """
 
         # Search in a ring only goes forward starting from the nodes own UUID.
@@ -45,7 +66,7 @@ class RouteTable():
         # Calculate in which bit the node is stored that is closest to the node we're looking for
         distance = self.get_distance(uuid)
         pos = self.distance_to_pos(distance)
-        return self._route_table[pos]
+        return self._table[pos]
 
     def set(self, node: "Node"):
         ...
@@ -71,8 +92,8 @@ class Node():
             self._uuid = uuid
 
         self._route_table = RouteTable(self._net_size, self._uuid)
-        print(self._route_table)
 
+        print(self._route_table)
         print(self._route_table.get_nearest_node(1))
 
     def __repr__(self):
@@ -80,6 +101,31 @@ class Node():
 
     def _get_uuid(self):
         return random.randrange(0, (2**self._net_size)-1)
+
+    def http_get(self, url: str, timeout: int=5):
+        try:
+            r = requests.get(url, timeout=timeout)
+            r.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            print(e)
+            return
+        except requests.ConnectionError as e:
+            print(e)
+            return
+        except requests.Timeout as e:
+            print(e)
+            return
+
+        return r.json()
+
+    def search_peer(self, peer: Peer, uuid: int, timeout=3):
+        """ Contact peer to ask for route to uuid """
+        if js := self.http_get(f"{peer.ip}:{peer.port}/find_peer/{uuid}"):
+            print(f"response: {peer}")
+            print(json.dumps(js, indent=4))
+        else:
+            print(f"Failed to find peer: {peer}")
+
 
 
 
