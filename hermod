@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+
+from core.node import Node
+import socket
+
+class Hermod():
+    def __init__(self, net_size: int) -> None:
+        self._net_size = net_size
+
+    def get_int_ip(self):
+        return socket.gethostbyname(socket.gethostname())
+
+    def run(self):
+        n = Node(self.get_int_ip(), 666, self._net_size, uuid=130)
+        print(n)
+
+
+
+
+if __name__ == "__main__":
+    hermod = Hermod(16)
+    hermod.run()
