@@ -4,6 +4,8 @@ import math
 import json
 import requests
 from dataclasses import dataclass
+import time
+from core.rest import HttpRequest, Rest, RestEndpoint, HttpMethod, HttpResponse
 
 
 @dataclass
@@ -32,12 +34,16 @@ class RouteTable():
         uuids_rjust = max(len(x) for x in uuids)
         uuids = [x.rjust(uuids_rjust) for x in uuids]
 
+
         ids = ["INDEX"]
         ids += [str(x) for x in range(self._table_size)]
         i_rjust = max(len(x) for x in ids)
         ids = [x.rjust(i_rjust) for x in ids]
 
-        for uuid, id, peer in zip(uuids, ids, self._table):
+        peers = ["PEERS"]
+        peers += self._table
+
+        for uuid, id, peer in zip(uuids, ids, peers):
             out.append(f"{id}  {uuid}  {peer}")
 
         return "\n".join(out)
@@ -68,13 +74,6 @@ class RouteTable():
         pos = self.distance_to_pos(distance)
         return self._table[pos]
 
-    def set(self, node: "Node"):
-        ...
-
-    def get(self, uuid: int):
-        ...
-
-
 
 
 class Node():
@@ -96,11 +95,16 @@ class Node():
         print(self._route_table)
         print(self._route_table.get_nearest_node(1))
 
+        self._is_stopped = False
+
     def __repr__(self):
         return f"NODE: {self._ip}:{self._port} => {self._uuid}"
 
     def _get_uuid(self):
         return random.randrange(0, (2**self._net_size)-1)
+
+    def stop(self):
+        self._is_stopped = True
 
     def http_get(self, url: str, timeout: int=5):
         try:
@@ -126,6 +130,17 @@ class Node():
         else:
             print(f"Failed to find peer: {peer}")
 
+    def pong_cb(self, ip: str, port: int, req: HttpRequest):
+        return HttpResponse({"msg": "pong!"})
 
+    def run(self):
 
+        rest = Rest(self._port)
 
+        pong = RestEndpoint("/test/ping", HttpMethod.GET, self.pong_cb)
+        rest.add_endpoint(pong)
+
+        try:
+            rest.run()
+        except KeyboardInterrupt:
+            rest.stop()

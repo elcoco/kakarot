@@ -1,22 +1,111 @@
 #!/usr/bin/env python3
 
-from core.node import Node
 import socket
+import threading
+import random
+import time
+import logging
+
+from queue import Queue
+
+from p2p.node import Node
+from core import state
+from core.utils import debug, info, error
+
+logger = logging.getLogger("hermod")
+
+
+class PeerThread(threading.Thread):
+    def __init__(self, net_size):
+        threading.Thread.__init__(self)
+        self._stopped = False
+        self._net_size = net_size
+
+        self._uuid = self._get_uuid(net_size)
+        self._port = self._uuid
+        self._node = None
+
+    def is_stopped(self):
+        return self._stopped
+
+    def __repr__(self):
+        return f"THREAD: {self}"
+
+    def _get_uuid(self, max):
+        """ To make testing slightly easier we use port numbers equal to the UUID's.
+            This means that we should start at UUID=1024 so we don't have to run as root """
+        return random.randrange(1024, 2**max)
+
+    def _get_int_ip(self):
+        return socket.gethostbyname(socket.gethostname())
+
+    def stop(self):
+        self._node.stop()
+
+    def run(self):
+
+        t_start = time.time()
+
+        self._node = Node(self._get_int_ip(), self._port, self._net_size, self._uuid)
+        info("peer_thread", str(self._uuid), f"starting {self._node}")
+
+        self._node.run()
+
+        self._stopped = True
+        t_delta = round(time.time()-t_start,1)
+        info("peer_thread", str(self._uuid), f"Finished execution in {t_delta} seconds")
+
+
+class ServerThreadManager():
+    """ Manages a pool of threads that get new data from servers """
+    def __init__(self, amount: int, net_size: int):
+        self._amount = amount
+        self._net_size = net_size
+        self._pool: list[PeerThread] = []
+
+    def stop(self):
+        for t in self._pool:
+            t.stop()
+            t.join()
+        t_elapsed = time.time() - self._t_start
+        info("thread_manager", "done", f"all nodes ran in {round(t_elapsed, 1)} seconds")
+
+    def run(self):
+        debug("thread_manager", "init", f"Starting {self._amount} nodes")
+        self._t_start = time.time()
+
+        for _ in range(self._amount):
+            t = PeerThread(self._net_size)
+            self._pool.append(t)
+            t.start()
+
+        while True:
+            time.sleep(0.1)
+
 
 class Hermod():
-    def __init__(self, net_size: int) -> None:
-        self._net_size = net_size
+    def __init__(self) -> None:
+        ...
 
     def get_int_ip(self):
         return socket.gethostbyname(socket.gethostname())
 
-    def run(self):
-        n = Node(self.get_int_ip(), 666, self._net_size, uuid=130)
-        print(n)
+    def run(self, state):
+        if state.do_test:
+            tm = ServerThreadManager(state.peers, state.net_size)
+            try:
+                tm.run()
+            except KeyboardInterrupt:
+                tm.stop()
+
+        elif state.do_run:
+            n = Node(self.get_int_ip(), state.port, state.net_size, state.uuid)
+            print(n)
+            n.run()
 
 
 
 
 if __name__ == "__main__":
-    hermod = Hermod(16)
-    hermod.run()
+    hermod = Hermod()
+    hermod.run(state)
