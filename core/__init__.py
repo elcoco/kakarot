@@ -54,7 +54,7 @@ def get_arg(args, key: str, default: Optional[str]=None):
         return default
 
 def parse_args(state):
-    parser = argparse.ArgumentParser(prog='hermod', usage='%(prog)s [OPTIONS]', description='P2p stuff',
+    parser = argparse.ArgumentParser(prog='Kakarot', usage='%(prog)s [OPTIONS]', description='P2p stuff',
              formatter_class=lambda prog: argparse.HelpFormatter(prog,max_help_position=42))
 
     subparsers = parser.add_subparsers(dest="command")
@@ -96,7 +96,7 @@ def parse_args(state):
 
 
 # init logging
-logger = logging.getLogger("hermod")
+logger = logging.getLogger("kakarot")
 ch = logging.StreamHandler()
 ch.setFormatter(CustomFormatter())
 logger.addHandler(ch)

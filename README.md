@@ -1,4 +1,4 @@
-# Hermod
+# Kakarot
 
 Peer connectivity: https://jenkov.com/tutorials/p2p/peer-connectivity.html
 Peer addressability: https://jenkov.com/tutorials/p2p/peer-addressability.html

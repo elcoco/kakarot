@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone
 
-logger = logging.getLogger('hermod')
+logger = logging.getLogger('kakarot')
 
 
 def colorize(string: str, color: str) -> str:

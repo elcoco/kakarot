@@ -12,7 +12,7 @@ from p2p.node import Node
 from core import state
 from core.utils import debug, info, error
 
-logger = logging.getLogger("hermod")
+logger = logging.getLogger("kakarot")
 
 
 class PeerThread(threading.Thread):
@@ -83,7 +83,7 @@ class ServerThreadManager():
             time.sleep(0.1)
 
 
-class Hermod():
+class Kakarot():
     def __init__(self) -> None:
         ...
 
@@ -107,5 +107,5 @@ class Hermod():
 
 
 if __name__ == "__main__":
-    hermod = Hermod()
-    hermod.run(state)
+    kakarot = Kakarot()
+    kakarot.run(state)
