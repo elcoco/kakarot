@@ -16,12 +16,12 @@ logger = logging.getLogger("kakarot")
 
 
 class PeerThread(threading.Thread):
-    def __init__(self, net_size):
+    def __init__(self, keyspace):
         threading.Thread.__init__(self)
         self._stopped = False
-        self._net_size = net_size
+        self._keyspace = keyspace
 
-        self._uuid = self._get_uuid(net_size)
+        self._uuid = self._get_uuid(keyspace)
         self._port = self._uuid
         self._node = None
 
@@ -46,7 +46,7 @@ class PeerThread(threading.Thread):
 
         t_start = time.time()
 
-        self._node = Node(self._get_int_ip(), self._port, self._net_size, self._uuid)
+        self._node = Node(self._get_int_ip(), self._port, self._keyspace, self._uuid)
         info("peer_thread", str(self._uuid), f"starting {self._node}")
 
         self._node.run()
@@ -58,9 +58,9 @@ class PeerThread(threading.Thread):
 
 class ServerThreadManager():
     """ Manages a pool of threads that get new data from servers """
-    def __init__(self, amount: int, net_size: int):
+    def __init__(self, amount: int, keyspace: int):
         self._amount = amount
-        self._net_size = net_size
+        self._keyspace = keyspace
         self._pool: list[PeerThread] = []
 
     def stop(self):
@@ -75,7 +75,7 @@ class ServerThreadManager():
         self._t_start = time.time()
 
         for _ in range(self._amount):
-            t = PeerThread(self._net_size)
+            t = PeerThread(self._keyspace)
             self._pool.append(t)
             t.start()
 
@@ -92,14 +92,14 @@ class Kakarot():
 
     def run(self, state):
         if state.do_test:
-            tm = ServerThreadManager(state.peers, state.net_size)
+            tm = ServerThreadManager(state.peers, state.keyspace)
             try:
                 tm.run()
             except KeyboardInterrupt:
                 tm.stop()
 
         elif state.do_run:
-            n = Node(self.get_int_ip(), state.port, state.net_size, state.bucket_size, uuid=state.uuid)
+            n = Node(self.get_int_ip(), state.port, state.keyspace, state.keyspace, uuid=state.uuid)
             print(n)
             n.run()
 

@@ -61,15 +61,15 @@ def parse_args(state):
 
     test = subparsers.add_parser("test", help="build script")
     test.add_argument('-p', '--peers',  help='amount of peers', metavar="AMOUNT", type=int, required=True)
-    test.add_argument('-n', '--net-size',  help='size of network in bits', metavar="SIZE", type=int, default=16)
-    test.add_argument('-k', '--bucket-size',  help='amount of peers per bucket', metavar="SIZE", type=int, default=5)
+    test.add_argument('-k', '--keyspace',  help='size of network in bits', metavar="SIZE", type=int, default=16)
+    test.add_argument('-b', '--bucket-size',  help='amount of peers per bucket', metavar="SIZE", type=int, default=5)
     test.add_argument('-D', '--debug', help='enable debugging', action='store_true')
 
     run = subparsers.add_parser("run", help="build and run script")
     run.add_argument('-p', '--port',  help='listen port', metavar="PORT", type=int, default=666)
     run.add_argument('-u', '--uuid',  help='uuid', metavar="UUID", type=int)
-    run.add_argument('-k', '--bucket-size',  help='amount of peers per bucket', metavar="SIZE", type=int, default=5)
-    run.add_argument('-n', '--net-size',  help='size of network in bits', metavar="SIZE", type=int, default=16)
+    run.add_argument('-b', '--bucket-size',  help='amount of peers per bucket', metavar="SIZE", type=int, default=5)
+    run.add_argument('-k', '--keyspace',  help='size of network in bits', metavar="SIZE", type=int, default=16)
     run.add_argument('-D', '--debug', help='enable debugging', action='store_true')
 
     args = parser.parse_args()
@@ -81,12 +81,12 @@ def parse_args(state):
         state.do_test     = True
         state.peers       = args.peers
         state.bucket_size = args.bucket_size
-        state.net_size    = args.net_size
+        state.keyspace    = args.keyspace
 
     elif args.command == "run":
         state.do_run      = True
         state.port        = args.port
-        state.net_size    = args.net_size
+        state.keyspace    = args.keyspace
         state.bucket_size = args.bucket_size
         state.uuid        = args.uuid
     else:

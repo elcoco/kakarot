@@ -21,20 +21,22 @@ class Peer():
     port: int
 
     def __repr__(self):
-        return f"PEER: {self.ip}:{self.port}"
+        return f"{self.uuid:04X}@{self.ip}:{self.port}"
 
     def get_distance(self, origin):
         return self.uuid ^ origin
 
-    def find_significant_common_bits(self, origin: int, size: int) -> int:
+    def find_significant_common_bits(self, origin: int, keyspace: int) -> int:
         """ Compare uuid's and find common most significant bits.
             This is used to determin the bucket we should store this peer """
+
+        assert(origin != self.uuid)
 
         # get the non matching bits between peer and origin node
         distance = self.get_distance(origin)
         count = 0
 
-        for i in reversed(range(size)):
+        for i in reversed(range(keyspace)):
             if distance & (0x01 << i):
                 break
             else:
@@ -43,11 +45,23 @@ class Peer():
 
 
 class RouteTable():
-    def __init__(self, key_size: int, bucket_size: int) -> None:
-        self._n_buckets = key_size
+    def __init__(self, keyspace: int, bucket_size: int) -> None:
+        self._keyspace = keyspace
         self._bucket_size = bucket_size
 
-        """
+        r"""
+        source: https://www.youtube.com/watch?v=NxhZ_c8YX8E
+        The network has the shape of a binary tree. The vertical levels are equal to the amount of
+        bits in the keyspace.
+        eg: 4Bit keyspace has 4 levels
+
+                        left 0, right 1
+
+           LEVEL 1        /\
+           LEVEL 2    /\      /\
+           LEVEL 3  /\  /\  /\  /\
+           LEVEL 4 /\/\/\/\/\/\/\/\
+
         The buckets where we store peers based on most significant common bit.
         This means that peers are stored based on distance from origin, NOT based
         on just the uuid.
@@ -64,26 +78,33 @@ class RouteTable():
 
         The bucket size (how many peers can we store in a bucket before it's full)
         is called K in the spec.
+
+
+        The further away we are from the origin node, the more space a bucket covers.
+        That means that the closer we are to origin, the more expertise we have of our surroundings
+
         """
-        self._k_buckets: list[list] = [ [] for _ in range(self._n_buckets) ]
+        self._k_buckets: list[list] = [ [] for _ in range(self._keyspace) ]
 
     def __repr__(self):
         out = []
         for i_bucket, bucket in enumerate(self._k_buckets):
+            if not bucket:
+                continue
             out.append(f"BUCKET: {i_bucket}:")
             for i_peer, peer in enumerate(bucket):
-                out.append(f"  {i_peer}: {str(peer)}")
+                out.append(f"  {i_peer:2}: {str(peer)}")
         return "\n".join(out)
 
     def insert_peer(self, peer: Peer, origin: int):
-        if (n := peer.find_significant_common_bits(origin, self._n_buckets)) == None:
+        if (n := peer.find_significant_common_bits(origin, self._keyspace)) == None:
             error("route_table", "init", f"no common bits")
             return
 
         # If max size for bucket is reached keep the old (stable) ones
         # TODO: we need to check the nodes in the bucket sometimes to check if they're still alive
         if len(self._k_buckets[n]) >= self._bucket_size:
-            info("route_table", "insert", f"not inserting, bucket full")
+            debug("route_table", "insert", f"not inserting, bucket full")
             return
 
         self._k_buckets[n].append(peer)
@@ -106,6 +127,9 @@ class Node():
         if uuid == None:
             self._uuid = self._get_uuid()
         else:
+            if math.log2(uuid) > self._key_size:
+                raise ValueError("node", "init", f"uuid is not in keyspace")
+
             self._uuid = uuid
 
         self._table = RouteTable(key_size, bucket_size)
