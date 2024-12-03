@@ -15,8 +15,11 @@ class BencEncodeError(Exception): pass
 
 
 class MType(Enum):
-    PING = 0
-    UNDEFINED = 1
+    PING = 0            # probe node to see if it is online
+    STORE = 1           # instruct node to store key:value pair
+    FIND_NODE = 2       # returns an (IP address, UDP port, Node ID) tuple for each of the k nodes closest to the target id
+    FIND_VALUE = 3
+    UNDEFINED = 4
 
 
 @dataclass
