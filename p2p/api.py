@@ -6,6 +6,8 @@ import threading
 import time
 import select
 import json
+import random
+import string
 
 from core.utils import debug, info, error
 
@@ -14,20 +16,62 @@ class BencDecodeError(Exception): pass
 class BencEncodeError(Exception): pass
 
 
-class MType(Enum):
+class QueryType(Enum):
     PING = 0            # probe node to see if it is online
     STORE = 1           # instruct node to store key:value pair
-    FIND_NODE = 2       # returns an (IP address, UDP port, Node ID) tuple for each of the k nodes closest to the target id
+    FIND_PEER = 2       # returns an (IP address, UDP port, Node ID) tuple for each of the k nodes closest to the target id
     FIND_VALUE = 3
     UNDEFINED = 4
 
+class MsgType(Enum):
+    QUERY = 0            # probe node to see if it is online
+    RESPONSE = 1           # instruct node to store key:value pair
+    ERROR = 2       # returns an (IP address, UDP port, Node ID) tuple for each of the k nodes closest to the target id
+    UNDEFINED = 3
+
+msg_type_by_str = { "q" : MsgType.QUERY,
+                    "r" : MsgType.RESPONSE,
+                    "e" : MsgType.ERROR }
+
+msg_type_by_enum = { MsgType.QUERY:    "q",
+                     MsgType.RESPONSE: "r",
+                     MsgType.ERROR:    "e" }
+
+query_type_by_str = { "ping" :       QueryType.PING,
+                      "store" :      QueryType.STORE,
+                      "find_peer" :  QueryType.FIND_PEER,
+                      "find_value" : QueryType.FIND_VALUE }
+
+query_type_by_enum = { QueryType.PING:       "ping",
+                       QueryType.STORE:      "store",
+                       QueryType.FIND_PEER:  "find_peer",
+                       QueryType.FIND_VALUE: "find_value" }
 
 @dataclass
 class Msg():
     ip: Optional[str] = None
     port: Optional[int] = None
-    mtype: MType = MType.UNDEFINED
-    data: list = field(default_factory=list)
+    data: dict = field(default_factory=dict)
+
+    # Bittorrent RPC protocol: https://www.bittorrent.org/beps/bep_0005.html
+    # The transaction id (2 bytes) is created by querying node and echoed by responding node
+    # With this nonce we can assure that the response belongs to the query
+    # {"t": "<transaction_id>"}
+    # Bencode: 1:t2:<transaction_id>
+    transaction_id: Optional[str] = None
+
+    # Messages must be be one of:
+    #   q = query
+    #   r = response
+    #   e = error
+    # {"y": "q|r|e"}
+    # Bencode: 1:y1:q
+    msg_type: MsgType = MsgType.UNDEFINED
+
+    query_type: QueryType = QueryType.UNDEFINED
+
+    def set_msg_type(self, mtype: MsgType):
+        self.data["y"] = mtype
 
     def _parse_int(self, data: str) -> tuple[int,int]:
         """ Bencoding int format: i<int>e """
@@ -137,42 +181,126 @@ class Msg():
             case _:
                 raise BencDecodeError(f"Failed to parse: {data[pos:]}")
 
+    def _parse_query_type(self, qtype: str):
+        match qtype:
+            case "ping":
+                return QueryType.PING
+            case "store":
+                return QueryType.STORE
+            case "find_peer":
+                return QueryType.FIND_PEER
+            case "find_value":
+                return QueryType.FIND_VALUE
+            case _:
+                raise BencDecodeError("Message has unknown query type")
+
+    def _parse_msg_type(self, mtype: str):
+        match mtype:
+            case "q":
+                return MsgType.QUERY
+            case "r":
+                return MsgType.RESPONSE
+            case "e":
+                return MsgType.ERROR
+            case _:
+                raise BencDecodeError("Message has unknown message type")
+
     def loads(self, data: str):
-        """ Parse bencoded data into python native structures """
+        """ Parse bencoded string into python native data structures """
         pos = 0
 
         while pos < len(data):
             ret, size = self._parse(data[pos:])
             pos += size
-            self.data.append(ret)
+
+            assert(type(ret) == dict)
+            self.data |= ret
 
         print(json.dumps(self.data, indent=4))
+
+        # Parse some mandatory keys
+        if "y" not in self.data.keys():
+            raise BencDecodeError("Message has no message type specified")
+        self.msg_type = msg_type_by_str[self.data["y"]]
+        del self.data["y"]
+
+        if "t" not in self.data.keys():
+            raise BencDecodeError("Message has no message transaction id")
+        self.transaction_id = self.data["t"]
+        del self.data["t"]
+
+        if "q" in self.data.keys():
+            self.query_type = query_type_by_str[self.data["q"]]
+            del self.data["q"]
+
         return self.data
+
+    def _msg_type_to_str(self, mtype: MsgType):
+        match mtype:
+            case MsgType.QUERY:
+                return "q"
+            case MsgType.RESPONSE:
+                return "r"
+            case MsgType.ERROR:
+                return "e"
+            case _:
+                raise BencDecodeError("Failed to encode msg, unknown message type")
+
+    def _query_type_to_str(self, mtype: MsgType):
+        match mtype:
+            case QueryType.PING:
+                return "ping"
+            case QueryType.STORE:
+                return "store"
+            case QueryType.FIND_PEER:
+                return "find_peer"
+            case QueryType.FIND_VALUE:
+                return "find_value"
+            case _:
+                raise BencDecodeError("Failed to encode msg, unknown message type")
 
     def dumps(self, data=None):
         """ Dump self.data as benc encoded string """
 
-        string = ""
+        out = ""
 
         if data == None:
             data = self.data
 
-        for item in data:
-            match item:
+            transaction_id = self.transaction_id
+            if transaction_id == None:
+                transaction_id = "".join([random.choice(string.ascii_letters) for _ in range(2)])
+            data["t"] = transaction_id
+
+            if self.msg_type == MsgType.UNDEFINED:
+                raise BencDecodeError("No message type specified")
+            data["y"] = msg_type_by_enum[self.msg_type]
+
+            if self.query_type != QueryType.UNDEFINED:
+                data["q"] = query_type_by_enum[self.query_type]
+
+            # TODO for some reason this is not encoded properly
+            print(data)
+
+        for k,v in data.items():
+            out += f"{len(k)}:{k}"
+            match v:
                 case int():
-                    string += f"i{item}e"
+                    out += f"i{v}e"
                 case str():
-                    string += f"{len(item)}:{item}"
+                    out += f"{len(v)}:{v}"
                 case list():
-                    string += f"l{self.dumps(item)}e"
+                    out += f"l{self.dumps(v)}e"
                 case dict():
-                    for k,v in item.items():
-                        string += f"d{len(k)}:{k}{self.dumps([v])}"
-                    string += "e"
+                    for k2,v2 in v.items():
+                        out += f"d{len(k2)}:{k2}{self.dumps([v2])}"
+                    out += "e"
                 case _:
                     raise BencEncodeError(f"Failed to encode, unknown type: {type(item)}")
 
-        return string
+        return out
+
+
 
 
 class ConnThread(threading.Thread):
@@ -212,6 +340,7 @@ class ConnThread(threading.Thread):
             try:
                 js = msg.loads(data.decode())
                 print(js)
+                print(msg.dumps())
             except BencDecodeError as e:
                 error("conn_thread", str(self), f"{e}")
 

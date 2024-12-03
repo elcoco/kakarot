@@ -101,8 +101,11 @@ class RouteTable():
             error("route_table", "init", f"no common bits")
             return
 
-        # If max size for bucket is reached keep the old (stable) ones
-        # TODO: we need to check the nodes in the bucket sometimes to check if they're still alive
+        # TODO: We need to PING the first peer in the bucket, if it doesn't respond we
+        #       will delete it and append the new peer to the head of the bucket.
+        #       If it does respond we move the peer to the end of the bucket and ignore the new peer.
+        #       This way we make sure we frequently check all our peers so we don't get stuck
+        #       with dead peers and become isolated.
         if len(self._k_buckets[n]) >= self._bucket_size:
             debug("route_table", "insert", f"not inserting, bucket full")
             return
