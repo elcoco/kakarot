@@ -10,25 +10,13 @@ import json
 from core.utils import debug, info, error
 
 
-class BencDecodeError(Exception):
-    pass
+class BencDecodeError(Exception): pass
+class BencEncodeError(Exception): pass
 
-class BencEncodeError(Exception):
-    pass
 
 class MType(Enum):
     PING = 0
     UNDEFINED = 1
-
-
-@dataclass
-class BencStr():
-    value: str
-
-
-@dataclass
-class BencInt():
-    value: int
 
 
 @dataclass
@@ -38,10 +26,8 @@ class Msg():
     mtype: MType = MType.UNDEFINED
     data: list = field(default_factory=list)
 
-    def __repr__(self):
-        ...
-
     def _parse_int(self, data: str) -> tuple[int,int]:
+        """ Bencoding int format: i<int>e """
         out = ""
         for i, c in enumerate(data):
             if i == 0 and c == "i":
@@ -58,6 +44,7 @@ class Msg():
         raise BencDecodeError(f"Failed to parse int, no delimiter found: {data}")
 
     def _parse_byte_str(self, data: str) -> tuple[str,int]:
+        """ Bencoding byte string format: <size>:<string> """
         size_str = ""
         i = 0
 
@@ -79,6 +66,7 @@ class Msg():
         return data, total_size
 
     def _parse_dict(self, data: str) -> tuple[dict,int]:
+        """ Bencoding dict format: d<key><value><key>...e """
         out = {}
         lst = []
         pos = 1
@@ -108,7 +96,7 @@ class Msg():
         raise BencDecodeError(f"Failed to parse dict, no delimiter found: {data}")
 
     def _parse_list(self, data: str) -> tuple[list,int]:
-        """ Parse string for list, syntax: l<item0><item1>e """
+        """ Bencoding list format: l<item0><item1>...e """
         out = []
         pos = 1
 
@@ -184,10 +172,6 @@ class Msg():
         return string
 
 
-
-
-
-
 class ConnThread(threading.Thread):
     thread_id = 0
 
@@ -222,8 +206,11 @@ class ConnThread(threading.Thread):
                 return
 
             msg = Msg()
-            js = msg.loads(data.decode())
-            print(js)
+            try:
+                js = msg.loads(data.decode())
+                print(js)
+            except BencDecodeError as e:
+                error("conn_thread", str(self), f"{e}")
 
         info("conn_thread", "run", "disconnected")
 
