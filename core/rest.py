@@ -9,26 +9,6 @@ import json
 from core.utils import debug, info, error
 
 
-class RestEndpointNotFoundError(Exception):
-    pass
-
-
-class HttpMethod(Enum):
-    GET = 0
-    POST = 1
-    NOT_IMPLEMENTED = 2
-
-
-@dataclass
-class RestEndpoint():
-    resource: str
-    method: HttpMethod
-    callback: Callable
-
-    def __repr__(self):
-        return f"{self.method}: {self.resource}"
-
-
 class HttpRequest():
     def __init__(self, req_data):
         self._req_data = req_data
@@ -93,16 +73,47 @@ class HttpResponse():
         return "".join(out)
 
 
+class NodeResources():
+    def get_pong(self, ip: str, port: int, req: HttpRequest, args: list):
+        return HttpResponse({"msg": "pong!"})
+
+    def get_uuid(self, ip: str, port: int, req: HttpRequest, args: list):
+        return HttpResponse({"uuid": "idk"})
+
+
+class HttpMethod(Enum):
+    GET = 0
+    POST = 1
+    NOT_IMPLEMENTED = 2
+
+
+@dataclass
+class Resource():
+    resource: str
+    method: HttpMethod
+    callback: Callable
+    args: list = field(default_factory=list)
+
+    def __post_init__(self):
+        """ Parse resource further to extract variables """
+
+    def __repr__(self):
+        return f"{self.method}: {self.resource}"
+
+    def is_match(self):
+        ...
+
+
 class ConnThread(threading.Thread):
     thread_id = 0
 
-    def __init__(self, conn, ip: str, port: int, endpoints: list[RestEndpoint]):
+    def __init__(self, conn, ip: str, port: int, resources: list[Resource]):
         threading.Thread.__init__(self)
 
         self._conn = conn
         self._ip = ip
         self._port = port
-        self._endpoints = endpoints
+        self._resources = resources
 
         self._stopped = False
         self._id = ConnThread.thread_id
@@ -117,8 +128,8 @@ class ConnThread(threading.Thread):
     def stop(self):
         self._stopped = True
 
-    def find_endpoint(self, req: HttpRequest):
-        for ep in self._endpoints:
+    def find_resource(self, req: HttpRequest):
+        for ep in self._resources:
             if ep.method == req.method and ep.resource == req.url:
                 return ep
 
@@ -142,9 +153,9 @@ class ConnThread(threading.Thread):
             req = HttpRequest(data.decode())
             print(req)
 
-            if ep := self.find_endpoint(req):
-                info("conn_thread", "run", f"found endpoint: {ep}")
-                res = ep.callback(self._ip, self._port, req)
+            if ep := self.find_resource(req):
+                info("conn_thread", "run", f"found resource: {ep}")
+                res = ep.callback(self._ip, self._port, req, ep.args)
                 self.send(res)
             else:
                 self.send(HttpResponse({"error_msg":"Resource not found!"}, status_code=401))
@@ -156,13 +167,13 @@ class Rest():
     def __init__(self, port: int) -> None:
         self._ip = self._get_ip()
         self._port = port
-        self._endpoints = []
+        self._resources = []
 
         self._stopped = False
         self._pool: list[ConnThread] = []
 
-    def add_endpoint(self, endpoint: RestEndpoint):
-        self._endpoints.append(endpoint)
+    def add_resource(self, resource: Resource):
+        self._resources.append(resource)
 
     def _get_ip(self):
         return socket.gethostbyname(socket.gethostname())
@@ -196,7 +207,7 @@ class Rest():
                 conn, addr = s.accept()
                 conn.settimeout(timeout)
 
-                t = ConnThread(conn, addr[0], addr[1], self._endpoints)
+                t = ConnThread(conn, addr[0], addr[1], self._resources)
                 self._pool.append(t)
                 t.start()
 

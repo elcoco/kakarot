@@ -5,7 +5,9 @@ import json
 import requests
 from dataclasses import dataclass
 import time
-from core.rest import HttpRequest, Rest, RestEndpoint, HttpMethod, HttpResponse
+
+from p2p.api import Api
+from core.utils import debug, info, error
 
 
 @dataclass
@@ -76,6 +78,10 @@ class RouteTable():
 
 
 
+
+
+
+
 class Node():
     def __init__(self, ip: str, port: int, net_size: int, uuid: Optional[int]=None) -> None:
 
@@ -130,17 +136,15 @@ class Node():
         else:
             print(f"Failed to find peer: {peer}")
 
-    def pong_cb(self, ip: str, port: int, req: HttpRequest):
-        return HttpResponse({"msg": "pong!"})
-
     def run(self):
 
-        rest = Rest(self._port)
 
-        pong = RestEndpoint("/test/ping", HttpMethod.GET, self.pong_cb)
-        rest.add_endpoint(pong)
 
         try:
-            rest.run()
+            api = Api("", self._port)
+            api.listen()
         except KeyboardInterrupt:
-            rest.stop()
+            api.stop()
+
+
+        info("node", "run", f"done")
