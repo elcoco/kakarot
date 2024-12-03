@@ -99,7 +99,7 @@ class Kakarot():
                 tm.stop()
 
         elif state.do_run:
-            n = Node(self.get_int_ip(), state.port, state.net_size, state.uuid)
+            n = Node(self.get_int_ip(), state.port, state.net_size, state.bucket_size, uuid=state.uuid)
             print(n)
             n.run()
 
