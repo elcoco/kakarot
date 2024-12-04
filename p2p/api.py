@@ -1,312 +1,269 @@
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Any
-from enum import Enum
 import socket
 import threading
-import time
 import select
 import json
 import random
 import string
 
+from p2p.api_parsers import Bencoder, BencDecodeError
 from core.utils import debug, info, error
 
 
-class BencDecodeError(Exception): pass
-class BencEncodeError(Exception): pass
+class MsgError(Exception): pass
 
 
-class QueryType(Enum):
-    PING = 0            # probe node to see if it is online
-    STORE = 1           # instruct node to store key:value pair
-    FIND_PEER = 2       # returns an (IP address, UDP port, Node ID) tuple for each of the k nodes closest to the target id
-    FIND_VALUE = 3
-    UNDEFINED = 4
+class MsgBaseClass(Bencoder):
+    def __init__(self, transaction_id: Optional[str]=None):
+        self._data: dict = {}
 
-class MsgType(Enum):
-    QUERY = 0            # probe node to see if it is online
-    RESPONSE = 1           # instruct node to store key:value pair
-    ERROR = 2       # returns an (IP address, UDP port, Node ID) tuple for each of the k nodes closest to the target id
-    UNDEFINED = 3
+        if transaction_id == None:
+            self.transaction_id = "".join([random.choice(string.ascii_letters+string.digits) for _ in range(2)])
+        else:
+            self.transaction_id = transaction_id
 
-msg_type_by_str = { "q" : MsgType.QUERY,
-                    "r" : MsgType.RESPONSE,
-                    "e" : MsgType.ERROR }
+    def __repr__(self):
+        return json.dumps(self._data, indent=4)
 
-msg_type_by_enum = { MsgType.QUERY:    "q",
-                     MsgType.RESPONSE: "r",
-                     MsgType.ERROR:    "e" }
+    def validate(self):
+        """ Needs to be implemented when subclassed """
 
-query_type_by_str = { "ping" :       QueryType.PING,
-                      "store" :      QueryType.STORE,
-                      "find_peer" :  QueryType.FIND_PEER,
-                      "find_value" : QueryType.FIND_VALUE }
+    @property
+    def transaction_id(self):
+        return self._data["t"]
 
-query_type_by_enum = { QueryType.PING:       "ping",
-                       QueryType.STORE:      "store",
-                       QueryType.FIND_PEER:  "find_peer",
-                       QueryType.FIND_VALUE: "find_value" }
+    @transaction_id.setter
+    def transaction_id(self, transaction_id: str):
+        self._data["t"] = transaction_id
 
-@dataclass
-class Msg():
-    ip: Optional[str] = None
-    port: Optional[int] = None
-    data: dict = field(default_factory=dict)
+    @property
+    def msg_type(self):
+        return self._data["y"]
 
-    # Bittorrent RPC protocol: https://www.bittorrent.org/beps/bep_0005.html
-    # The transaction id (2 bytes) is created by querying node and echoed by responding node
-    # With this nonce we can assure that the response belongs to the query
-    # {"t": "<transaction_id>"}
-    # Bencode: 1:t2:<transaction_id>
-    transaction_id: Optional[str] = None
+    @msg_type.setter
+    def msg_type(self, mtype: str):
+        self._data["y"] = mtype
 
-    # Messages must be be one of:
-    #   q = query
-    #   r = response
-    #   e = error
-    # {"y": "q|r|e"}
-    # Bencode: 1:y1:q
-    msg_type: MsgType = MsgType.UNDEFINED
+    def is_query(self):
+        return self._data.get("y") == "q"
 
-    query_type: QueryType = QueryType.UNDEFINED
+    def is_response(self):
+        return self._data.get("y") == "r"
 
-    def set_msg_type(self, mtype: MsgType):
-        self.data["y"] = mtype
+    def is_error(self):
+        return self._data.get("y") == "e"
 
-    def _parse_int(self, data: str) -> tuple[int,int]:
-        """ Bencoding int format: i<int>e """
-        out = ""
-        for i, c in enumerate(data):
-            if i == 0 and c == "i":
-                continue
-            if i == 1 and c == "-":
-                out += c
-            elif c.isnumeric():
-                out += c
-            elif c == "e":
-                info("msg", "parse_int", f"found: {out}")
-                return int(out), i+1
-            else:
-                raise BencDecodeError(f"Failed to parse int, illegal char ({c}): {data}")
-        raise BencDecodeError(f"Failed to parse int, no delimiter found: {data}")
+    def from_bencoding(self, data: str):
+        self._data = self.loads(data)
+        self.validate()
 
-    def _parse_byte_str(self, data: str) -> tuple[str,int]:
-        """ Bencoding byte string format: <size>:<string> """
-        size_str = ""
-        i = 0
+    def from_dict(self, data: dict):
+        self._data = data
+        self.validate()
 
-        for i, c in enumerate(data, 1):
-            if c.isnumeric():
-                size_str += c
-            elif c == ":":
-                break
-            else:
-                raise BencDecodeError(f"Failed to parse byte string size, illegal char ({c}): {data}")
+    def to_bencoding(self):
+        self.validate()
+        return self.dumps(self._data)
 
-        size = int(size_str)
-        if len(data[i:]) < size:
-            raise BencDecodeError(f"Failed to parse byte string, not enough data for size: {size}: {data}")
 
-        total_size = i + size
-        data = data[i:total_size]
-        info("msg", "parse_str", f"found: [{size}] {data}")
-        return data, total_size
+class ResponseMsg(MsgBaseClass):
+    def __init__(self, *args, uuid: Optional[int]=None, ip: Optional[str]=None, port: Optional[int]=None, **kwargs):
+        MsgBaseClass.__init__(self, *args, **kwargs)
 
-    def _parse_dict(self, data: str) -> tuple[dict,int]:
-        """ Bencoding dict format: d<key><value><key>...e """
-        out = {}
-        lst = []
-        pos = 1
+        # sender info
+        self.uuid = uuid
+        self.ip = ip
+        self.port = port
 
-        if data[0] != "d":
-            raise BencDecodeError(f"Failed to parse dict, malformed: {data}")
+        if all([uuid, ip, port]):
+            self.set_sender_node(uuid, ip, port)
 
-        # Recursively parse all items in list
-        while pos < len(data):
-            if data[pos] ==  "e":
-                if len(lst) % 2 != 0:
-                    raise BencDecodeError(f"Failed to parse dict, amount items must be even")
+        self.msg_type = "r"
 
-                for i in range(0, len(lst), 2):
-                    if type(lst[i]) != str:
-                        raise BencDecodeError(f"Failed to parse dict, key must be a string: {lst[i]}")
+    @property
+    def id(self):
+        return self._data["a"]["id"]
 
-                    out[lst[i]] = lst[i+1]
+    def set_sender_node(self, uuid: int, ip: str, port: int):
+        if not "r" in self._data.keys():
+            self._data["r"] = {}
+        self._data["r"]["id"] = { "uuid": uuid,
+                                  "ip":   ip,
+                                  "port": port }
+    @property
+    def return_values(self):
+        return self._data["r"]
 
-                info("msg", "parse_dict", f"found: {out}")
-                return out, pos+1
+    @return_values.setter
+    def return_values(self, data: dict):
+        self._data["r"] |= data
 
-            res, size = self._parse(data[pos:])
-            pos += size
-            lst.append(res)
+    def validate(self):
+        if not self._data.get("t"):
+            raise MsgError(f"Failed to validate message, message has no transaction id")
+        if not self._data.get("y"):
+            raise MsgError(f"Failed to validate message, message has no type information")
+        if not self._data["y"] == "r":
+            raise MsgError(f"Failed to validate message, message type is not response")
+        if not self._data.get("r"):
+            raise MsgError(f"Failed to validate response message, message has no response type information")
+        if not self._data["r"].get("id"):
+            raise MsgError(f"Failed to validate response message, id key not found in arguments")
 
-        raise BencDecodeError(f"Failed to parse dict, no delimiter found: {data}")
 
-    def _parse_list(self, data: str) -> tuple[list,int]:
-        """ Bencoding list format: l<item0><item1>...e """
-        out = []
-        pos = 1
+class QueryMsgBaseClass(MsgBaseClass):
+    def __init__(self, *args, uuid: Optional[int]=None, ip: Optional[str]=None, port: Optional[int]=None, **kwargs):
+        MsgBaseClass.__init__(self, *args, **kwargs)
 
-        if data[0] != "l":
-            raise BencDecodeError(f"Failed to parse list, malformed: {data}")
+        # sender info
+        self.uuid = uuid
+        self.ip = ip
+        self.port = port
 
-        # Recursively parse all items in list
-        while pos < len(data):
-            if data[pos] ==  "e":
-                info("msg", "parse_list", f"found: {out}")
-                return out, pos+1
+        if all([uuid, ip, port]):
+            self.set_sender_node(uuid, ip, port)
 
-            res, size = self._parse(data[pos:])
-            pos += size
-            out.append(res)
+        self.msg_type = "q"
 
-        raise BencDecodeError(f"Failed to parse list, no delimiter found: {data}")
 
-    def _parse(self, data: str) -> tuple[Any, int]:
-        """ Parse string, method is used for recursion """
-        pos = 0
-        match data[pos]:
-            case "i":
-                res, size = self._parse_int(data[pos:])
-                return res, pos + size
-            case c if c.isnumeric():
-                res, size = self._parse_byte_str(data[pos:])
-                return res, pos + size
-            case "l":
-                res, size = self._parse_list(data[pos:])
-                return res, pos + size
-            case "d":
-                res, size = self._parse_dict(data[pos:])
-                return res, pos + size
-            case _:
-                raise BencDecodeError(f"Failed to parse: {data[pos:]}")
+    @property
+    def query_type(self):
+        return self._data["q"]
 
-    def _parse_query_type(self, qtype: str):
-        match qtype:
+    @query_type.setter
+    def query_type(self, qtype: str):
+        self._data["q"] = qtype
+
+    @property
+    def id(self):
+        return self._data["a"]["id"]
+
+    def set_sender_node(self, uuid: int, ip: str, port: int):
+        if not "a" in self._data.keys():
+            self._data["a"] = {}
+        self._data["a"]["id"] = { "uuid": uuid,
+                                  "ip":   ip,
+                                  "port": port }
+
+    def validate(self):
+        print("validating:", self._data)
+        if not self._data.get("t"):
+            raise MsgError(f"Failed to validate message, message has no transaction id")
+        if not self._data.get("y"):
+            raise MsgError(f"Failed to validate message, message has no type information")
+        if not self._data["y"] == "q":
+            raise MsgError(f"Failed to validate message, message type is not query")
+        if not self._data.get("q"):
+            raise MsgError(f"Failed to validate query message, message has no query type information")
+        if not self._data.get("a"):
+            raise MsgError(f"Failed to validate query message, message has no arguments")
+        if not self._data["a"].get("id"):
+            raise MsgError(f"Failed to validate query message, id key not found in arguments")
+
+        # TODO: We could parse id value for correct encoding.
+        #       Should be: UUID in network byte order
+
+        match self._data["q"]:
             case "ping":
-                return QueryType.PING
+                # ping has no extra arguments
+                ...
             case "store":
-                return QueryType.STORE
-            case "find_peer":
-                return QueryType.FIND_PEER
-            case "find_value":
-                return QueryType.FIND_VALUE
+                ...
+            case "find_node":
+                if not self._data["a"].get("target"):
+                    raise MsgError(f"Failed to validate find_node query message, target node not found in arguments")
+            case "find_key":
+                ...
             case _:
-                raise BencDecodeError("Message has unknown query type")
-
-    def _parse_msg_type(self, mtype: str):
-        match mtype:
-            case "q":
-                return MsgType.QUERY
-            case "r":
-                return MsgType.RESPONSE
-            case "e":
-                return MsgType.ERROR
-            case _:
-                raise BencDecodeError("Message has unknown message type")
-
-    def loads(self, data: str):
-        """ Parse bencoded string into python native data structures """
-        pos = 0
-
-        while pos < len(data):
-            ret, size = self._parse(data[pos:])
-            pos += size
-
-            assert(type(ret) == dict)
-            self.data |= ret
-
-        print(json.dumps(self.data, indent=4))
-
-        # Parse some mandatory keys
-        if "y" not in self.data.keys():
-            raise BencDecodeError("Message has no message type specified")
-        self.msg_type = msg_type_by_str[self.data["y"]]
-        del self.data["y"]
-
-        if "t" not in self.data.keys():
-            raise BencDecodeError("Message has no message transaction id")
-        self.transaction_id = self.data["t"]
-        del self.data["t"]
-
-        if "q" in self.data.keys():
-            self.query_type = query_type_by_str[self.data["q"]]
-            del self.data["q"]
-
-        return self.data
-
-    def _msg_type_to_str(self, mtype: MsgType):
-        match mtype:
-            case MsgType.QUERY:
-                return "q"
-            case MsgType.RESPONSE:
-                return "r"
-            case MsgType.ERROR:
-                return "e"
-            case _:
-                raise BencDecodeError("Failed to encode msg, unknown message type")
-
-    def _query_type_to_str(self, mtype: MsgType):
-        match mtype:
-            case QueryType.PING:
-                return "ping"
-            case QueryType.STORE:
-                return "store"
-            case QueryType.FIND_PEER:
-                return "find_peer"
-            case QueryType.FIND_VALUE:
-                return "find_value"
-            case _:
-                raise BencDecodeError("Failed to encode msg, unknown message type")
-
-    def dumps(self, data=None):
-        """ Dump self.data as benc encoded string """
-
-        out = ""
-
-        if data == None:
-            data = self.data
-
-            transaction_id = self.transaction_id
-            if transaction_id == None:
-                transaction_id = "".join([random.choice(string.ascii_letters) for _ in range(2)])
-            data["t"] = transaction_id
-
-            if self.msg_type == MsgType.UNDEFINED:
-                raise BencDecodeError("No message type specified")
-            data["y"] = msg_type_by_enum[self.msg_type]
-
-            if self.query_type != QueryType.UNDEFINED:
-                data["q"] = query_type_by_enum[self.query_type]
-
-            # TODO for some reason this is not encoded properly
-            print(data)
-
-        for k,v in data.items():
-            out += f"{len(k)}:{k}"
-            match v:
-                case int():
-                    out += f"i{v}e"
-                case str():
-                    out += f"{len(v)}:{v}"
-                case list():
-                    out += f"l{self.dumps(v)}e"
-                case dict():
-                    for k2,v2 in v.items():
-                        out += f"d{len(k2)}:{k2}{self.dumps([v2])}"
-                    out += "e"
-                case _:
-                    raise BencEncodeError(f"Failed to encode, unknown type: {type(item)}")
-
-        return out
+                raise MsgError(f"Failed to validate message, unknown query type: {self._data['y']}")
 
 
+class PingMsg(QueryMsgBaseClass):
+    def __init__(self, *args, **kwargs):
+        QueryMsgBaseClass.__init__(self, *args, **kwargs)
+        self.query_type = "ping"
+
+
+class StoreMsg(QueryMsgBaseClass):
+    def __init__(self, *args, **kwargs):
+        QueryMsgBaseClass.__init__(self, *args, **kwargs)
+        self.query_type = "store"
+
+
+class FindNodeMsg(QueryMsgBaseClass):
+    def __init__(self, *args, **kwargs):
+        QueryMsgBaseClass.__init__(self, *args, **kwargs)
+        self.query_type = "find_node"
+
+    @property
+    def target_node(self):
+        return self._data["a"].get("target")
+
+    def set_target_node(self, uuid: int, ip: str, port: int):
+        self._data["a"]["target"] = { "uuid": uuid,
+                                      "ip":   ip,
+                                      "port": port }
+
+
+class FindKeyMsg(QueryMsgBaseClass):
+    def __init__(self, *args, **kwargs):
+        QueryMsgBaseClass.__init__(self, *args, **kwargs)
+        self.query_type = "find_key"
+
+
+class ErrorMsg(MsgBaseClass):
+    def __init__(self, *args, code: Optional[int]=None, msg: Optional[str]=None, **kwargs):
+        MsgBaseClass.__init__(self, *args, **kwargs)
+        self._error_code = code
+        self._data["e"] = [None, None]
+
+        if code:
+            self.error_code = code
+        if msg:
+            self.error_msg = msg
+
+        self.msg_type = "e"
+
+    @property
+    def error_code(self):
+        return self._data["e"][0]
+
+    @error_code.setter
+    def error_code(self, code: int):
+        self._data["e"][0] = code
+
+    @property
+    def error_msg(self):
+        return self._data["e"][1]
+
+    @error_msg.setter
+    def error_msg(self, msg: str):
+        self._data["e"][1] = msg
+
+    def validate(self):
+        if not self._data.get("t"):
+            raise MsgError(f"Failed to validate message, message has no transaction id")
+        if not self._data.get("y"):
+            raise MsgError(f"Failed to validate message, message has no type information")
+        if not self._data["y"] == "e":
+            raise MsgError(f"Failed to validate message, message type is not error")
+        if not self._data.get("e"):
+            raise MsgError(f"Failed to validate error message, message has no error information")
+
+        try:
+            int(self._data.get("e")[0])   # error code
+            self._data.get("e")[1]        # error message
+        except IndexError:
+            raise MsgError(f"Failed to validate error message, message has malformed error")
+        except ValueError:
+            raise MsgError(f"Failed to validate error message, message has malformed error")
 
 
 class ConnThread(threading.Thread):
     thread_id = 0
 
-    def __init__(self, conn, ip: str, port: int):
+    def __init__(self, conn, ip: str, port: int, callbacks: dict[str,Callable]):
         threading.Thread.__init__(self)
         self._conn = conn
         self._ip = ip
@@ -315,12 +272,15 @@ class ConnThread(threading.Thread):
         self._id = ConnThread.thread_id
         ConnThread.thread_id += 1
 
+        # These callbacks are used to respond to incoming messages
+        self._callbacks = callbacks
+
     def __repr__(self):
         return f"[{self._id}]{self._ip}:{self._port}"
 
-    def send(self, res: Msg):
+    def send(self, res):
         self._conn.send(str(res).encode())
-        
+
     def run(self):
         with self._conn:
             info("conn_thread", str(self), f"accepted")
@@ -336,22 +296,58 @@ class ConnThread(threading.Thread):
                 error("conn_thread", str(self), f"no data")
                 return
 
-            msg = Msg()
+            parsed = Bencoder().loads(data.decode())
+
+            if (mtype := parsed.get("y")) == None:
+                raise ValueError("Missing message type")
+
+            match mtype:
+                case "q":
+                    if (qtype := parsed.get("q")) == None:
+                        raise ValueError("Missing query type")
+                    match qtype:
+                        case "ping":
+                            msg = PingMsg()
+                        case "store":
+                            msg = StoreMsg()
+                        case "find_node":
+                            msg = FindNodeMsg()
+                        case "find_key":
+                            msg = FindKeyMsg()
+                        case _:
+                            raise ValueError("Unknown query type")
+
+                case "r":
+                    msg = ResponseMsg()
+                case "e":
+                    msg = ErrorMsg()
+                case _:
+                    raise ValueError("Unknown message type")
+
             try:
-                js = msg.loads(data.decode())
-                print(js)
-                print(msg.dumps())
+                msg.from_dict(parsed)
             except BencDecodeError as e:
                 error("conn_thread", str(self), f"{e}")
+                return
+
+            if msg.is_query():
+                self.send(self._callbacks[msg.query_type](msg))
+            else:
+                raise MsgError(f"Unexpected message type: {msg}")
+
+            print("parsed:", msg.to_bencoding())
 
         info("conn_thread", "run", "disconnected")
 
 
 class Api():
-    def __init__(self, ip: str, port: int, timeout: int=5) -> None:
+    def __init__(self, ip: str, port: int, callbacks: dict[str,Callable], timeout: int=5) -> None:
         self._port = port
         self._ip = ip
         self._timeout = timeout
+
+        # These callbacks are used to respond to incoming messages
+        self._callbacks = callbacks
 
         self._pool = []
         self._stopped = False
@@ -399,7 +395,7 @@ class Api():
                     conn, addr = s.accept()
                     conn.settimeout(self._timeout)
 
-                    t = ConnThread(conn, addr[0], addr[1])
+                    t = ConnThread(conn, addr[0], addr[1], self._callbacks)
                     t.start()
 
         info("rest", "listen", f"closing api")
@@ -409,4 +405,3 @@ class Api():
             t.join()
 
         s.close()
-

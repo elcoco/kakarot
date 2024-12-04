@@ -6,7 +6,7 @@ import requests
 from dataclasses import dataclass
 import time
 
-from p2p.api import Api
+from p2p.api import Api, PingMsg, StoreMsg, FindNodeMsg, FindKeyMsg, ErrorMsg, ResponseMsg
 from core.utils import debug, info, error
 
 
@@ -42,6 +42,20 @@ class Peer():
             else:
                 count += 1
         return count
+
+class Lock():
+    _is_locked = False
+
+    def __enter__(self):
+        info("lock", "enter", "waiting for lock")
+        while Lock._is_locked:
+            ...
+        Lock._is_locked = True
+        info("lock", "enter", "aquired lock")
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        Lock._is_locked = False
+        info("lock", "enter", "released lock")
 
 
 class RouteTable():
@@ -106,11 +120,12 @@ class RouteTable():
         #       If it does respond we move the peer to the end of the bucket and ignore the new peer.
         #       This way we make sure we frequently check all our peers so we don't get stuck
         #       with dead peers and become isolated.
-        if len(self._k_buckets[n]) >= self._bucket_size:
-            debug("route_table", "insert", f"not inserting, bucket full")
-            return
+        with Lock():
+            if len(self._k_buckets[n]) >= self._bucket_size:
+                debug("route_table", "insert", f"not inserting, bucket full")
+                return
 
-        self._k_buckets[n].append(peer)
+            self._k_buckets[n].append(peer)
 
 
 class Node():
@@ -124,8 +139,6 @@ class Node():
 
         self._ip = ip
         self._port = port
-
-        print(">>>uuid:",uuid)
 
         if uuid == None:
             self._uuid = self._get_uuid()
@@ -148,6 +161,20 @@ class Node():
     def stop(self):
         self._is_stopped = True
 
+    def ping_callback(self, msg: PingMsg) -> ResponseMsg|ErrorMsg:
+        """ Respond to incoming PING message """
+        # TODO: Check if we have to save the peer in the routing table
+        return ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
+
+    def store_callback(self, msg: StoreMsg) -> ResponseMsg|ErrorMsg:
+        """ Respond to incoming FIND_NODE message """
+
+    def find_node_callback(self, msg: FindNodeMsg) -> ResponseMsg|ErrorMsg:
+        """ Respond to incoming FIND_NODE message """
+
+    def find_key_callback(self, msg: FindKeyMsg) -> ResponseMsg|ErrorMsg:
+        """ Respond to incoming FIND_NODE message """
+
     def run(self):
         for _ in range(2000):
             n = random.randrange(0, 2**self._key_size-1)
@@ -155,11 +182,17 @@ class Node():
 
         print(self._table)
 
-        try:
-            api = Api("", self._port)
-            api.listen()
-        except KeyboardInterrupt:
-            api.stop()
+        callbacks = { "ping":      self.ping_callback,
+                      "store":     self.store_callback,
+                      "find_node": self.find_node_callback,
+                      "find_key":  self.find_key_callback }
+
+        with Lock():
+            try:
+                api = Api("", self._port, callbacks)
+                api.listen()
+            except KeyboardInterrupt:
+                api.stop()
 
 
         info("node", "run", f"done")

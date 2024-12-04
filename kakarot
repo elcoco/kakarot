@@ -14,6 +14,10 @@ from core.utils import debug, info, error
 
 logger = logging.getLogger("kakarot")
 
+"""
+TODO: Next step would be to implement ping and request/respond to find peers
+      That would allow us to test all the network routing """
+
 
 class PeerThread(threading.Thread):
     def __init__(self, keyspace):
