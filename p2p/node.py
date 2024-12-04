@@ -110,6 +110,24 @@ class RouteTable():
                 out.append(f"  {i_peer:2}: {str(peer)}")
         return "\n".join(out)
 
+    def get_closest_nodes(self, origin: Peer, target: Peer, amount: Optional[int]=None):
+        """ get <amount> closest nodes from target """
+        if amount == None:
+            amount = self._bucket_size
+
+        if (n := origin.find_significant_common_bits(target.uuid, self._keyspace)) == None:
+            error("route_table", "init", f"no common bits")
+            return
+
+        # don't think this is correct
+        print(bin(target.uuid))
+        for p in self._k_buckets[n]:
+
+            distance = target.get_distance(p.uuid)
+            print(bin(distance))
+
+        print("look in bucket:", n)
+
     def insert_peer(self, peer: Peer, origin: int):
         if (n := peer.find_significant_common_bits(origin, self._keyspace)) == None:
             error("route_table", "init", f"no common bits")
@@ -164,6 +182,7 @@ class Node():
     def ping_callback(self, msg: PingMsg) -> ResponseMsg|ErrorMsg:
         """ Respond to incoming PING message """
         # TODO: Check if we have to save the peer in the routing table
+        # echo -n "d1:t2:xx1:y1:q1:q4:ping1:ad2:idd4:uuidi666e2:ip9:127.0.0.14:porti666eeee" | ncat localhost 12345
         return ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
 
     def store_callback(self, msg: StoreMsg) -> ResponseMsg|ErrorMsg:
@@ -171,6 +190,12 @@ class Node():
 
     def find_node_callback(self, msg: FindNodeMsg) -> ResponseMsg|ErrorMsg:
         """ Respond to incoming FIND_NODE message """
+        # echo -n d1:t2:xx1:y1:q1:q9:find_node1:ad2:idd4:uuidi666e2:ip9:127.0.0.14:porti666ee6:targetd4:uuidi98766e2:ip9:127.0.0.14:porti98766eeee | ncat localhost 12345
+        res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
+        sender = Peer(**msg.id)
+        target = Peer(**msg.target_node)
+        self._table.get_closest_nodes(sender, target)
+        print(msg.target_node)
 
     def find_key_callback(self, msg: FindKeyMsg) -> ResponseMsg|ErrorMsg:
         """ Respond to incoming FIND_NODE message """

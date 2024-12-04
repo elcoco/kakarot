@@ -1,6 +1,8 @@
 from typing import Any
 
 from core.utils import debug, info, error
+#def debug(s1, s2, s3):
+#    print(s1, s2, s3)
 
 
 class BencDecodeError(Exception): pass

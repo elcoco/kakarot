@@ -53,7 +53,13 @@
         #   - find_key
         q: ping | store | find_node | find_key
 
-        # optional arguments for query type
-        a: { key: value }
+        query arguments
+        
+            Ping:        a: {}
+            store:
+            find_node:   a: { "id": "querying_node_id", "target": "target_node_id" }
+
+
+                # optional arguments for query type
 
 

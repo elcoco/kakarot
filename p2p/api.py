@@ -130,7 +130,6 @@ class QueryMsgBaseClass(MsgBaseClass):
 
         self.msg_type = "q"
 
-
     @property
     def query_type(self):
         return self._data["q"]
@@ -163,10 +162,13 @@ class QueryMsgBaseClass(MsgBaseClass):
         if not self._data.get("a"):
             raise MsgError(f"Failed to validate query message, message has no arguments")
         if not self._data["a"].get("id"):
-            raise MsgError(f"Failed to validate query message, id key not found in arguments")
-
-        # TODO: We could parse id value for correct encoding.
-        #       Should be: UUID in network byte order
+            raise MsgError(f"Failed to validate query message, id dictionary not found in arguments")
+        if not self._data["a"]["id"].get("uuid"):
+            raise MsgError(f"Failed to validate query message, missing uuid in id")
+        if not self._data["a"]["id"].get("ip"):
+            raise MsgError(f"Failed to validate query message, missing ip in id")
+        if not self._data["a"]["id"].get("port"):
+            raise MsgError(f"Failed to validate query message, missing port in id")
 
         match self._data["q"]:
             case "ping":
@@ -287,6 +289,7 @@ class ConnThread(threading.Thread):
 
     def run(self):
         """ Receive message and try to parse it into a query message.
+            Try to find the right callback for the message.
             All message types that are not query messages are considered errors """
 
         with self._conn:
@@ -308,6 +311,8 @@ class ConnThread(threading.Thread):
                 self.send(ErrorMsg(code=ERROR_PROTOCOL, msg=str(e)))
                 error("conn_thread", str(self), f"{e}")
                 return
+
+            print(json.dumps(parsed, indent=4))
 
             if parsed.get("y") == None:
                 self.send(ErrorMsg(code=ERROR_PROTOCOL, msg="missing msg type"))
@@ -340,7 +345,7 @@ class ConnThread(threading.Thread):
                 error("conn_thread", str(self), str(e))
                 return
 
-            self.send(self._callbacks[msg.query_type](msg))
+            self.send(self._callbacks[qtype](msg))
 
         info("conn_thread", "run", "disconnected")
 
