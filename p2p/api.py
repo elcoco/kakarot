@@ -10,6 +10,10 @@ import string
 from p2p.api_parsers import Bencoder, BencDecodeError
 from core.utils import debug, info, error
 
+ERROR_GENERIC  = 201  # the rest of the errors
+ERROR_SERVER   = 202  # internal server error
+ERROR_PROTOCOL = 203  # malformed packet, invalid arguments or bad token
+ERROR_METHOD   = 204  # unexpected method, eg: from api we only reply to query messages
 
 class MsgError(Exception): pass
 
@@ -282,6 +286,9 @@ class ConnThread(threading.Thread):
         self._conn.send(str(res).encode())
 
     def run(self):
+        """ Receive message and try to parse it into a query message.
+            All message types that are not query messages are considered errors """
+
         with self._conn:
             info("conn_thread", str(self), f"accepted")
 
@@ -289,53 +296,51 @@ class ConnThread(threading.Thread):
                 data = self._conn.recv(1024)
             except TimeoutError:
                 error("conn_thread", str(self), f"timedout")
-                self._conn.close()
                 return
 
             if not data:
                 error("conn_thread", str(self), f"no data")
                 return
 
-            parsed = Bencoder().loads(data.decode())
-
-            if (mtype := parsed.get("y")) == None:
-                raise ValueError("Missing message type")
-
-            match mtype:
-                case "q":
-                    if (qtype := parsed.get("q")) == None:
-                        raise ValueError("Missing query type")
-                    match qtype:
-                        case "ping":
-                            msg = PingMsg()
-                        case "store":
-                            msg = StoreMsg()
-                        case "find_node":
-                            msg = FindNodeMsg()
-                        case "find_key":
-                            msg = FindKeyMsg()
-                        case _:
-                            raise ValueError("Unknown query type")
-
-                case "r":
-                    msg = ResponseMsg()
-                case "e":
-                    msg = ErrorMsg()
-                case _:
-                    raise ValueError("Unknown message type")
-
             try:
-                msg.from_dict(parsed)
+                parsed = Bencoder().loads(data.decode())
             except BencDecodeError as e:
+                self.send(ErrorMsg(code=ERROR_PROTOCOL, msg=str(e)))
                 error("conn_thread", str(self), f"{e}")
                 return
 
-            if msg.is_query():
-                self.send(self._callbacks[msg.query_type](msg))
-            else:
-                raise MsgError(f"Unexpected message type: {msg}")
+            if parsed.get("y") == None:
+                self.send(ErrorMsg(code=ERROR_PROTOCOL, msg="missing msg type"))
+                error("conn_thread", str(self), "Missing message type")
+                return
 
-            print("parsed:", msg.to_bencoding())
+            if (qtype := parsed.get("q")) == None:
+                self.send(ErrorMsg(code=ERROR_PROTOCOL, msg="missing query type"))
+                error("conn_thread", str(self), "Missing query type")
+                return
+
+            match qtype:
+                case "ping":
+                    msg = PingMsg()
+                case "store":
+                    msg = StoreMsg()
+                case "find_node":
+                    msg = FindNodeMsg()
+                case "find_key":
+                    msg = FindKeyMsg()
+                case _:
+                    self.send(ErrorMsg(code=ERROR_METHOD, msg="unknown query type"))
+                    error("conn_thread", str(self), "Unknown query type")
+                    return
+
+            try:
+                msg.from_dict(parsed)
+            except MsgError as e:
+                self.send(ErrorMsg(code=ERROR_PROTOCOL, msg=str(e)))
+                error("conn_thread", str(self), str(e))
+                return
+
+            self.send(self._callbacks[msg.query_type](msg))
 
         info("conn_thread", "run", "disconnected")
 
