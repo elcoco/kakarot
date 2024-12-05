@@ -192,10 +192,11 @@ class Node():
         """ Respond to incoming FIND_NODE message """
         # echo -n d1:t2:xx1:y1:q1:q9:find_node1:ad2:idd4:uuidi666e2:ip9:127.0.0.14:porti666ee6:targetd4:uuidi98766e2:ip9:127.0.0.14:porti98766eeee | ncat localhost 12345
         res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
-        sender = Peer(**msg.id)
-        target = Peer(**msg.target_node)
+        sender = Peer(**msg.sender_id)
+        target = Peer(**msg.target_id)
+        print(msg.target_id)
+
         self._table.get_closest_nodes(sender, target)
-        print(msg.target_node)
 
     def find_key_callback(self, msg: FindKeyMsg) -> ResponseMsg|ErrorMsg:
         """ Respond to incoming FIND_NODE message """
