@@ -20,7 +20,7 @@ TODO: Next step would be to implement ping and request/respond to find peers
 
 
 class PeerThread(threading.Thread):
-    def __init__(self, keyspace):
+    def __init__(self, keyspace: int, alpha: int):
         threading.Thread.__init__(self)
         self._stopped = False
         self._keyspace = keyspace
@@ -28,6 +28,7 @@ class PeerThread(threading.Thread):
         self._uuid = self._get_uuid(keyspace)
         self._port = self._uuid
         self._node = None
+        self._alpha = alpha
 
     def is_stopped(self):
         return self._stopped
@@ -50,7 +51,7 @@ class PeerThread(threading.Thread):
 
         t_start = time.time()
 
-        self._node = Node(self._get_int_ip(), self._port, self._keyspace, self._uuid)
+        self._node = Node(self._get_int_ip(), self._port, self._keyspace, self._alpha, self._uuid)
         info("peer_thread", str(self._uuid), f"starting {self._node}")
 
         self._node.run()
@@ -62,10 +63,11 @@ class PeerThread(threading.Thread):
 
 class ServerThreadManager():
     """ Manages a pool of threads that get new data from servers """
-    def __init__(self, amount: int, keyspace: int):
+    def __init__(self, amount: int, keyspace: int, alpha: int):
         self._amount = amount
         self._keyspace = keyspace
         self._pool: list[PeerThread] = []
+        self._alpha = alpha
 
     def stop(self):
         for t in self._pool:
@@ -79,7 +81,7 @@ class ServerThreadManager():
         self._t_start = time.time()
 
         for _ in range(self._amount):
-            t = PeerThread(self._keyspace)
+            t = PeerThread(self._keyspace, self._alpha)
             self._pool.append(t)
             t.start()
 
@@ -96,14 +98,14 @@ class Kakarot():
 
     def run(self, state):
         if state.do_test:
-            tm = ServerThreadManager(state.peers, state.keyspace)
+            tm = ServerThreadManager(state.peers, state.keyspace, state.alpha)
             try:
                 tm.run()
             except KeyboardInterrupt:
                 tm.stop()
 
         elif state.do_run:
-            n = Node(self.get_int_ip(), state.port, state.keyspace, state.keyspace, uuid=state.uuid)
+            n = Node(self.get_int_ip(), state.port, state.keyspace, state.keyspace, state.alpha, uuid=state.uuid)
             print(n)
             n.run()
 

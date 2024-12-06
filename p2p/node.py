@@ -5,9 +5,15 @@ import json
 import requests
 from dataclasses import dataclass
 import time
+import socket
 
-from p2p.api import Api, PingMsg, StoreMsg, FindNodeMsg, FindKeyMsg, ErrorMsg, ResponseMsg
+from p2p.api import Api
+from p2p.api_parsers import BencDecodeError
+from p2p.message import PingMsg, StoreMsg, FindNodeMsg, FindKeyMsg, ResponseMsg, ErrorMsg
+from p2p.message import MsgError
 from core.utils import debug, info, error
+
+MSG_LENGTH = 1024
 
 
 @dataclass
@@ -42,6 +48,75 @@ class Peer():
             else:
                 count += 1
         return count
+
+    def _send_recv_msg(self, msg_req, timeout=5):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+
+            t_start = time.time()
+
+            try:
+                s.connect((self.ip, self.port))
+            except ConnectionRefusedError as e:
+                error("peer", "send_recv", str(e))
+                return
+
+            s.settimeout(timeout)
+
+            msg_bin = str(msg_req.to_bencoding()).encode()
+            bytes_sent = 0
+
+            while bytes_sent < len(msg_bin):
+                try:
+                    n = s.send(msg_bin)
+                except BrokenPipeError as e:
+                    error("peer", "send_recv", str(e))
+                    return
+
+                if n == 0:
+                    error("peer", "send_recv", f"connection broken")
+                    return
+                bytes_sent += n
+
+            data = b""
+
+            try:
+                while (chunk := s.recv(MSG_LENGTH)):
+                    data += chunk
+            except TimeoutError:
+                error("peer", "send_recv", "Connection timedout")
+                return
+            except ConnectionResetError as e:
+                error("peer", "send_recv", str(e))
+                return
+
+
+            try:
+                msg_res = ResponseMsg()
+                msg_res.from_bencoding(data.decode())
+                msg_res.response_time = time.time() - t_start
+            except MsgError as e:
+                error("peer", "send_recv", str(e))
+                return
+            except BencDecodeError as e:
+                error("peer", "send_recv", str(e))
+                return
+
+            if msg_res.transaction_id != msg_req.transaction_id:
+                error("peer", "send_recv", f"communication error, transaction_id error: {msg_req.transaction_id} != {msg_res.transaction_id}")
+                return
+
+        return msg_res
+
+    def ping(self, origin: "Peer"):
+        """ Ping peer and return respond time """
+        info("peer", "ping", "sending ping")
+        msg_req = PingMsg(uuid=origin.uuid, ip=origin.ip, port=origin.port)
+        print(msg_req)
+        if (msg_res := self._send_recv_msg(msg_req)):
+            info("peer", "send_recv", f"response time: {msg_res.response_time}")
+            print(msg_res)
+            return msg_res.response_time
+
 
 class Lock():
     _is_locked = False
@@ -128,26 +203,49 @@ class RouteTable():
 
         print("look in bucket:", n)
 
-    def insert_peer(self, peer: Peer, origin: int):
-        if (n := peer.find_significant_common_bits(origin, self._keyspace)) == None:
-            error("route_table", "init", f"no common bits")
-            return
+    def _bucket_has_peer(self, bucket: int, peer: Peer):
+        """ Look in bucket for a peer that matches all key:value pairs of <peer> """
+        for p in self._k_buckets[bucket]:
+            if p == peer:
+                return p
 
-        # TODO: We need to PING the first peer in the bucket, if it doesn't respond we
-        #       will delete it and append the new peer to the head of the bucket.
-        #       If it does respond we move the peer to the end of the bucket and ignore the new peer.
-        #       This way we make sure we frequently check all our peers so we don't get stuck
-        #       with dead peers and become isolated.
+    def _bucket_is_full(self, bucket: int):
+        return len(self._k_buckets[bucket]) >= self._bucket_size
+
+    def insert_peer(self, peer: Peer, origin: Peer):
+        """ We have a least seen eviction policy and we prefer old peers because they tend to
+            be reliable than new peers. Apparently research concluded that peers that have been
+            online for an hour are likely to be online for another hour. """
         with Lock():
-            if len(self._k_buckets[n]) >= self._bucket_size:
-                debug("route_table", "insert", f"not inserting, bucket full")
-                return
+            bucket = peer.find_significant_common_bits(origin.uuid, self._keyspace)
 
-            self._k_buckets[n].append(peer)
+            if (p := self._bucket_has_peer(bucket, peer)):
+                self._k_buckets[bucket].remove(p)
+                self._k_buckets[bucket].append(peer)
+                info("route_table", "insert_peer", "moved peer to end")
+
+            elif self._bucket_is_full(bucket):
+                # Now we need to ping the least seen node (head) and remove it if it doesn't respond
+                oldest_peer = self._k_buckets[bucket][0]
+
+                if oldest_peer.ping(origin):
+                    # Old peer is alive, discard new peer because we prefer our old peers (more trustworthy)
+                    self._k_buckets[bucket].remove(oldest_peer)
+                    self._k_buckets[bucket].append(oldest_peer)
+                    info("route_table", "insert_peer", "bucket full, discard peer")
+                else:
+                    # peer doesn't respond so we replace it
+                    self._k_buckets[bucket].remove(oldest_peer)
+                    self._k_buckets[bucket].append(peer)
+                    info("route_table", "insert_peer", "old peer unreachable, adding new peer")
+
+            else:
+                self._k_buckets[bucket].append(peer)
+                info("route_table", "insert_peer", "adding new peer")
 
 
 class Node():
-    def __init__(self, ip: str, port: int, key_size: int, bucket_size: int, uuid: Optional[int]=None) -> None:
+    def __init__(self, ip: str, port: int, key_size: int, bucket_size: int, alpha: int, uuid: Optional[int]=None) -> None:
 
         # Size of network uuid/keys in bits
         self._key_size = key_size
@@ -159,12 +257,16 @@ class Node():
         self._port = port
 
         if uuid == None:
-            self._uuid = self._get_uuid()
+            self._uuid = self._create_uuid()
         else:
             if math.log2(uuid) > self._key_size:
                 raise ValueError("node", "init", f"uuid is not in keyspace")
 
             self._uuid = uuid
+
+        # Concurency parameter when looking up nodes.
+        # Lookup max <alpha> nodes at a time
+        self._alpha = alpha
 
         self._table = RouteTable(key_size, bucket_size)
 
@@ -173,52 +275,75 @@ class Node():
     def __repr__(self):
         return f"NODE: {self._ip}:{self._port} => {self._uuid}"
 
-    def _get_uuid(self):
+    def _create_uuid(self):
         return random.randrange(0, (2**self._key_size)-1)
 
     def stop(self):
         self._is_stopped = True
 
-    def ping_callback(self, msg: PingMsg) -> ResponseMsg|ErrorMsg:
-        """ Respond to incoming PING message """
+    def res_ping_callback(self, msg: PingMsg) -> ResponseMsg|ErrorMsg:
+        """ Called by Api(), respond to incoming PING query message """
         # TODO: Check if we have to save the peer in the routing table
         # echo -n "d1:t2:xx1:y1:q1:q4:ping1:ad2:idd4:uuidi666e2:ip9:127.0.0.14:porti666eeee" | ncat localhost 12345
+        sender = Peer(**msg.sender_id)
+        origin = Peer(self._uuid, self._ip, self._port)
+        self._table.insert_peer(sender, origin)
         return ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
 
-    def store_callback(self, msg: StoreMsg) -> ResponseMsg|ErrorMsg:
-        """ Respond to incoming FIND_NODE message """
-
-    def find_node_callback(self, msg: FindNodeMsg) -> ResponseMsg|ErrorMsg:
-        """ Respond to incoming FIND_NODE message """
+    def res_find_node_callback(self, msg: FindNodeMsg) -> ResponseMsg|ErrorMsg:
+        """ Called by Api(), respond to incoming FIND_NODE query message """
         # echo -n d1:t2:xx1:y1:q1:q9:find_node1:ad2:idd4:uuidi666e2:ip9:127.0.0.14:porti666ee6:targetd4:uuidi98766e2:ip9:127.0.0.14:porti98766eeee | ncat localhost 12345
-        res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
         sender = Peer(**msg.sender_id)
         target = Peer(**msg.target_id)
-        print(msg.target_id)
+        origin = Peer(self._uuid, self._ip, self._port)
+        self._table.insert_peer(sender, origin)
 
         self._table.get_closest_nodes(sender, target)
 
-    def find_key_callback(self, msg: FindKeyMsg) -> ResponseMsg|ErrorMsg:
-        """ Respond to incoming FIND_NODE message """
+        res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
+
+
+    def res_store_callback(self, msg: StoreMsg) -> ResponseMsg|ErrorMsg:
+        """ Called by Api(), respond to incoming STORE query message """
+        sender = Peer(**msg.sender_id)
+        origin = Peer(self._uuid, self._ip, self._port)
+        self._table.insert_peer(sender, origin)
+
+    def res_find_key_callback(self, msg: FindKeyMsg) -> ResponseMsg|ErrorMsg:
+        """ Called by Api(), respond to incoming FIND_KEY query message """
+        sender = Peer(**msg.sender_id)
+        origin = Peer(self._uuid, self._ip, self._port)
+        self._table.insert_peer(sender, origin)
 
     def run(self):
-        for _ in range(2000):
-            n = random.randrange(0, 2**self._key_size-1)
-            self._table.insert_peer(Peer(n, "127.0.0.1", n), self._uuid)
+        origin = Peer(self._uuid, self._ip, self._port)
+        #for _ in range(2000):
+        #    n = random.randrange(0, 2**self._key_size-1)
+        #    self._table.insert_peer(Peer(n, "127.0.0.1", n), origin)
+        ##self._table.insert_peer(Peer(9988, "127.0.0.1", 9988), self._uuid)
+        #self._table.insert_peer(Peer(22345, "127.0.0.1", 22345), origin)
+        peer = Peer(22345, "127.0.0.1", 22345)
+        peer.ping(origin)
+
 
         print(self._table)
 
-        callbacks = { "ping":      self.ping_callback,
-                      "store":     self.store_callback,
-                      "find_node": self.find_node_callback,
-                      "find_key":  self.find_key_callback }
+        callbacks = { "ping":      self.res_ping_callback,
+                      "store":     self.res_store_callback,
+                      "find_node": self.res_find_node_callback,
+                      "find_key":  self.res_find_key_callback }
 
-        with Lock():
+        api = Api("", self._port, callbacks)
+        api.start()
+
+        info("node", "run", f"Entering main event loop")
+
+        while True:
+            # main event loop
             try:
-                api = Api("", self._port, callbacks)
-                api.listen()
+                time.sleep(1)
             except KeyboardInterrupt:
                 api.stop()
-
+                break
 
         info("node", "run", f"done")

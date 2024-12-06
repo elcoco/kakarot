@@ -116,7 +116,7 @@ class Bencoder():
                 res, size = self._parse_dict(data[pos:])
                 return res, pos + size
             case _:
-                raise BencDecodeError(f"Failed to parse: {data[pos:]}")
+                raise BencDecodeError(f"Failed to parse, unrecognised data type '{data[pos]}': {data[pos:]}")
 
     def loads(self, data: str):
         """ Parse bencoded string into python native data structures """
