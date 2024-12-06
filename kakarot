@@ -98,14 +98,14 @@ class Kakarot():
 
     def run(self, state):
         if state.do_test:
-            tm = ServerThreadManager(state.peers, state.keyspace, state.alpha)
+            tm = ServerThreadManager(state.peers, state.keyspace, state.bucket_size, state.alpha)
             try:
                 tm.run()
             except KeyboardInterrupt:
                 tm.stop()
 
         elif state.do_run:
-            n = Node(self.get_int_ip(), state.port, state.keyspace, state.keyspace, state.alpha, uuid=state.uuid)
+            n = Node(self.get_int_ip(), state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
             print(n)
             n.run()
 

@@ -27,7 +27,13 @@ class Peer():
     port: int
 
     def __repr__(self):
-        return f"{self.uuid:04X}@{self.ip}:{self.port}"
+        return f"{self.uuid:016b}@{self.ip}:{self.port}"
+        #return f"{self.uuid:04X}@{self.ip}:{self.port}"
+
+    def to_dict(self):
+        return {"uuid" : self.uuid,
+                "ip" : self.ip,
+                "port" : self.port }
 
     def get_distance(self, origin):
         return self.uuid ^ origin
@@ -134,9 +140,10 @@ class Lock():
 
 
 class RouteTable():
-    def __init__(self, keyspace: int, bucket_size: int) -> None:
+    def __init__(self, keyspace: int, bucket_size: int, origin_uuid) -> None:
         self._keyspace = keyspace
         self._bucket_size = bucket_size
+        self._origin_uuid = origin_uuid
 
         r"""
         source: https://www.youtube.com/watch?v=NxhZ_c8YX8E
@@ -182,26 +189,35 @@ class RouteTable():
                 continue
             out.append(f"BUCKET: {i_bucket}:")
             for i_peer, peer in enumerate(bucket):
-                out.append(f"  {i_peer:2}: {str(peer)}")
+                out.append(f"  {i_peer:2}: {str(peer)} {peer.get_distance(self._origin_uuid)}")
         return "\n".join(out)
 
     def get_closest_nodes(self, origin: Peer, target: Peer, amount: Optional[int]=None):
-        """ get <amount> closest nodes from target """
+        """ Get <amount> closest nodes from target """
         if amount == None:
             amount = self._bucket_size
 
-        if (n := origin.find_significant_common_bits(target.uuid, self._keyspace)) == None:
-            error("route_table", "init", f"no common bits")
-            return
+        out = []
 
-        # don't think this is correct
-        print(bin(target.uuid))
-        for p in self._k_buckets[n]:
+        bucket = origin.find_significant_common_bits(target.uuid, self._keyspace)
+        n = bucket
 
-            distance = target.get_distance(p.uuid)
-            print(bin(distance))
+        # Go over all buckets and sort peers so that we get a list of sorted peers by closeness
+        while len(out) != amount:
 
-        print("look in bucket:", n)
+            peers_sorted = sorted(self._k_buckets[n], key=lambda x: target.get_distance(x.uuid))
+            out += peers_sorted[:amount-len(out)]
+
+            if n == self._keyspace-1:
+                n = bucket-1
+            elif n >= bucket:
+                n += 1
+            elif n == 0:
+                break
+            else:
+                n -= 1
+        return out
+
 
     def _bucket_has_peer(self, bucket: int, peer: Peer):
         """ Look in bucket for a peer that matches all key:value pairs of <peer> """
@@ -268,7 +284,7 @@ class Node():
         # Lookup max <alpha> nodes at a time
         self._alpha = alpha
 
-        self._table = RouteTable(key_size, bucket_size)
+        self._table = RouteTable(key_size, bucket_size, self._uuid)
 
         self._is_stopped = False
 
@@ -298,9 +314,13 @@ class Node():
         origin = Peer(self._uuid, self._ip, self._port)
         self._table.insert_peer(sender, origin)
 
-        self._table.get_closest_nodes(sender, target)
+        peers = self._table.get_closest_nodes(sender, target)
+        # TODO: write and read address={ip, port}
 
         res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
+        res.return_values = {"nodes" : [{"uuid":p.uuid, "address" : f"{p.ip}:{p.port}"} for p in peers]}
+
+        print(res)
 
 
     def res_store_callback(self, msg: StoreMsg) -> ResponseMsg|ErrorMsg:
@@ -317,14 +337,15 @@ class Node():
 
     def run(self):
         origin = Peer(self._uuid, self._ip, self._port)
-        #for _ in range(2000):
-        #    n = random.randrange(0, 2**self._key_size-1)
-        #    self._table.insert_peer(Peer(n, "127.0.0.1", n), origin)
+        for _ in range(2000):
+            n = random.randrange(0, 2**self._key_size-1)
+            self._table.insert_peer(Peer(n, "127.0.0.1", n), origin)
         ##self._table.insert_peer(Peer(9988, "127.0.0.1", 9988), self._uuid)
         #self._table.insert_peer(Peer(22345, "127.0.0.1", 22345), origin)
-        peer = Peer(22345, "127.0.0.1", 22345)
-        peer.ping(origin)
+        #peer = Peer(22345, "127.0.0.1", 22345)
+        #peer.ping(origin)
 
+        print(f"self: {self._uuid:016b}")
 
         print(self._table)
 
