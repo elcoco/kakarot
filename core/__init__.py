@@ -54,7 +54,7 @@ def get_arg(args, key: str, default: Optional[str]=None):
         return default
 
 def parse_args(state):
-    default_port = 666
+    default_port = 1024
     default_bucket_size = 5
     default_keyspace = 16
     default_alpha = 3
@@ -78,6 +78,7 @@ def parse_args(state):
     run.add_argument('-k', '--keyspace',  help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
     run.add_argument('-p', '--port',  help='listen port', metavar="PORT", type=int, default=default_port)
     run.add_argument('-u', '--uuid',  help='uuid', metavar="UUID", type=int)
+    run.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str)
 
     ping = subparsers.add_parser("ping",     help="run node, perform a ping and exit")
     ping.add_argument('-a', '--alpha',       help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=default_alpha)
@@ -94,14 +95,16 @@ def parse_args(state):
     find_node.add_argument('-D', '--debug',       help='enable debugging', action='store_true')
     find_node.add_argument('-k', '--keyspace',    help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
     find_node.add_argument('-p', '--port',        help='listen port', metavar="PORT", type=int, default=default_port)
-    find_node.add_argument('-t', '--target',      help='target address: <uuid@ip:port>', metavar="ADDRESS", type=str, required=True)
+    find_node.add_argument('-t', '--target',      help='target uuid', metavar="ADDRESS", type=int, required=True)
     find_node.add_argument('-u', '--uuid',        help='uuid', metavar="UUID", type=int)
+    find_node.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str)
 
     args = parser.parse_args()
     
     state.do_test = False
     state.do_run = False
     state.do_ping = False
+    state.do_find_node = False
 
     if args.command == "test":
         state.do_test     = True
@@ -117,6 +120,7 @@ def parse_args(state):
         state.bucket_size = args.bucket_size
         state.uuid        = args.uuid
         state.alpha       = args.alpha
+        state.bootstrap   = args.bootstrap
     elif args.command == "ping":
         state.do_ping     = True
         state.port        = args.port
@@ -133,6 +137,7 @@ def parse_args(state):
         state.uuid         = args.uuid
         state.alpha        = args.alpha
         state.target       = args.target
+        state.bootstrap    = args.bootstrap
     else:
         parser.print_help()
         sys.exit()

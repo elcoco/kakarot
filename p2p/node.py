@@ -30,22 +30,21 @@ class Peer():
         return f"{self.uuid:016b}@{self.ip}:{self.port}"
         #return f"{self.uuid:04X}@{self.ip}:{self.port}"
 
-    def get_distance(self, origin):
-        return self.uuid ^ origin
+    def get_distance(self, origin_uuid):
+        return self.uuid ^ origin_uuid
 
-    def find_significant_common_bits(self, origin: int, keyspace: int) -> int:
+    def find_significant_common_bits(self, origin_uuid: int, keyspace: int) -> int:
         """ Compare uuid's and find common most significant bits.
             This is used to determin the bucket we should store this peer """
 
         #assert(origin != self.uuid)
 
         # if peer == origin, all bits match so take last bucket as closest
-        if origin == self.uuid:
-            print("!!!!!!!", keyspace-1)
+        if origin_uuid == self.uuid:
             return keyspace - 1
 
         # get the non matching bits between peer and origin node
-        distance = self.get_distance(origin)
+        distance = self.get_distance(origin_uuid)
         count = 0
 
         for i in reversed(range(keyspace)):
@@ -119,9 +118,14 @@ class RouteTable():
         for i_bucket, bucket in enumerate(self._k_buckets):
             if not bucket:
                 continue
-            out.append(f"BUCKET: {i_bucket}:")
+            header = f"BUCKET {i_bucket}:"
+            indent = len(header) * " "
+
             for i_peer, peer in enumerate(bucket):
-                out.append(f"  {i_peer:2}: {str(peer)} {peer.get_distance(self._origin_uuid)}")
+                if i_peer == 0:
+                    out.append(f"{header} {i_peer:2}: {str(peer)} {peer.get_distance(self._origin_uuid)}")
+                else:
+                    out.append(f"{indent} {i_peer:2}: {str(peer)} {peer.get_distance(self._origin_uuid)}")
         return "\n".join(out)
 
     def get_closest_nodes(self, origin: Peer, target: int, amount: Optional[int]=None):
@@ -137,11 +141,12 @@ class RouteTable():
         with Lock():
             # Go over all buckets and sort peers so that we get a list of sorted peers by closeness
             while len(out) != amount:
+                #print(target, f"bucket={bucket}", f"n={n}")
 
                 peers_sorted = sorted(self._k_buckets[n], key=lambda x: x.get_distance(target))
                 out += peers_sorted[:amount-len(out)]
 
-                if n == self._keyspace-1:
+                if n == self._keyspace-1 and n != 0:
                     n = bucket-1
                 elif n >= bucket:
                     n += 1
@@ -229,7 +234,7 @@ class Node(Server):
         self._table = RouteTable(key_size, bucket_size, self._uuid)
 
     def __repr__(self):
-        return f"NODE: {self._ip}:{self._port} => {self._uuid}"
+        return f"NODE: {self._uuid}@{self._ip}:{self._port}"
 
     def _create_uuid(self):
         return random.randrange(0, (2**self._key_size)-1)
@@ -342,6 +347,7 @@ class Node(Server):
 
     def find_node(self, target_uuid: int):
         """ Initiate a node lookup """
+        # TODO: follow recursive algorythm from paper
         info("peer", "find_node", "sending find_node")
         origin = Peer(self._uuid, self._ip, self._port)
 
@@ -363,26 +369,14 @@ class Node(Server):
 
         for peer in peers:
             info("node", "bootstrap", str(peer))
+            print(peer.uuid, peer.ip, peer.port)
             self._table.insert_peer(peer, origin)
 
         self.find_node(origin.uuid)
 
         print("end")
 
-
     def run(self):
-        #origin = Peer(self._uuid, self._ip, self._port)
-        #for _ in range(200):
-        #    n = random.randrange(0, 2**self._key_size-1)
-        #    self._table.insert_peer(Peer(n, "127.0.0.1", n), origin)
-
-        #print(f"self: {self._uuid:016b}")
-
-        #print(self._table)
-
-        #server = Server("", self._port, callbacks)
-        #server.start()
-
         info("node", "run", f"starting listener")
 
         # This starts blocking server that listens for incoming connections
