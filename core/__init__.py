@@ -54,30 +54,54 @@ def get_arg(args, key: str, default: Optional[str]=None):
         return default
 
 def parse_args(state):
+    default_port = 666
+    default_bucket_size = 5
+    default_keyspace = 16
+    default_alpha = 3
+
     parser = argparse.ArgumentParser(prog='Kakarot', usage='%(prog)s [OPTIONS]', description='P2p stuff',
              formatter_class=lambda prog: argparse.HelpFormatter(prog,max_help_position=42))
 
     subparsers = parser.add_subparsers(dest="command")
 
-    test = subparsers.add_parser("test", help="build script")
+    test = subparsers.add_parser("test", help="test")
     test.add_argument('-p', '--peers',  help='amount of peers', metavar="AMOUNT", type=int, required=True)
-    test.add_argument('-k', '--keyspace',  help='size of network in bits', metavar="SIZE", type=int, default=16)
-    test.add_argument('-b', '--bucket-size',  help='amount of peers per bucket', metavar="SIZE", type=int, default=5)
-    test.add_argument('-a', '--alpha',  help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=3)
+    test.add_argument('-k', '--keyspace',  help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
+    test.add_argument('-b', '--bucket-size',  help='amount of peers per bucket', metavar="SIZE", type=int, default=default_bucket_size)
+    test.add_argument('-a', '--alpha',  help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=default_alpha)
     test.add_argument('-D', '--debug', help='enable debugging', action='store_true')
 
-    run = subparsers.add_parser("run", help="build and run script")
-    run.add_argument('-p', '--port',  help='listen port', metavar="PORT", type=int, default=666)
-    run.add_argument('-u', '--uuid',  help='uuid', metavar="UUID", type=int)
-    run.add_argument('-b', '--bucket-size',  help='amount of peers per bucket', metavar="SIZE", type=int, default=5)
-    run.add_argument('-a', '--alpha',  help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=3)
-    run.add_argument('-k', '--keyspace',  help='size of network in bits', metavar="SIZE", type=int, default=16)
+    run = subparsers.add_parser("run", help="run node")
+    run.add_argument('-a', '--alpha',  help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=default_alpha)
+    run.add_argument('-b', '--bucket-size',  help='amount of peers per bucket', metavar="SIZE", type=int, default=default_bucket_size)
     run.add_argument('-D', '--debug', help='enable debugging', action='store_true')
+    run.add_argument('-k', '--keyspace',  help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
+    run.add_argument('-p', '--port',  help='listen port', metavar="PORT", type=int, default=default_port)
+    run.add_argument('-u', '--uuid',  help='uuid', metavar="UUID", type=int)
+
+    ping = subparsers.add_parser("ping",     help="run node, perform a ping and exit")
+    ping.add_argument('-a', '--alpha',       help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=default_alpha)
+    ping.add_argument('-b', '--bucket-size', help='amount of peers per bucket', metavar="SIZE", type=int, default=default_bucket_size)
+    ping.add_argument('-D', '--debug',       help='enable debugging', action='store_true')
+    ping.add_argument('-k', '--keyspace',    help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
+    ping.add_argument('-p', '--port',        help='listen port', metavar="PORT", type=int, default=default_port)
+    ping.add_argument('-t', '--target',      help='target address: <uuid@ip:port>', metavar="ADDRESS", type=str, required=True)
+    ping.add_argument('-u', '--uuid',        help='uuid', metavar="UUID", type=int)
+
+    find_node = subparsers.add_parser("find_node", help="find node and exit")
+    find_node.add_argument('-a', '--alpha',       help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=default_alpha)
+    find_node.add_argument('-b', '--bucket-size', help='amount of peers per bucket', metavar="SIZE", type=int, default=default_bucket_size)
+    find_node.add_argument('-D', '--debug',       help='enable debugging', action='store_true')
+    find_node.add_argument('-k', '--keyspace',    help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
+    find_node.add_argument('-p', '--port',        help='listen port', metavar="PORT", type=int, default=default_port)
+    find_node.add_argument('-t', '--target',      help='target address: <uuid@ip:port>', metavar="ADDRESS", type=str, required=True)
+    find_node.add_argument('-u', '--uuid',        help='uuid', metavar="UUID", type=int)
 
     args = parser.parse_args()
     
     state.do_test = False
     state.do_run = False
+    state.do_ping = False
 
     if args.command == "test":
         state.do_test     = True
@@ -93,6 +117,22 @@ def parse_args(state):
         state.bucket_size = args.bucket_size
         state.uuid        = args.uuid
         state.alpha       = args.alpha
+    elif args.command == "ping":
+        state.do_ping     = True
+        state.port        = args.port
+        state.keyspace    = args.keyspace
+        state.bucket_size = args.bucket_size
+        state.uuid        = args.uuid
+        state.alpha       = args.alpha
+        state.target      = args.target
+    elif args.command == "find_node":
+        state.do_find_node = True
+        state.port         = args.port
+        state.keyspace     = args.keyspace
+        state.bucket_size  = args.bucket_size
+        state.uuid         = args.uuid
+        state.alpha        = args.alpha
+        state.target       = args.target
     else:
         parser.print_help()
         sys.exit()

@@ -6,7 +6,7 @@ import string
 import json
 
 from core.utils import debug, info, error
-from p2p.api_parsers import Bencoder
+from p2p.bencode import Bencoder
 
 
 class MsgError(Exception): pass
@@ -16,7 +16,7 @@ class ErrCode(IntEnum):
     GENERIC   = 201  # the rest of the errors
     SERVER    = 202  # internal server error
     PROTOCOL  = 203  # malformed packet, invalid arguments or bad token
-    METHOD    = 204  # unexpected method, eg: from api we only reply to query messages
+    METHOD    = 204  # unexpected method, eg: from server we only reply to query messages
     UNDEFINED = -1
 
 
@@ -115,6 +115,7 @@ class ResponseMsg(MsgBaseClass):
         self.uuid = uuid
         self.ip = ip
         self.port = port
+        print(uuid, ip, port)
 
         if all([uuid, ip, port]):
             self.set_sender_id(uuid, ip, port)
@@ -225,6 +226,9 @@ class QueryMsgBaseClass(MsgBaseClass):
             case QueryType.FIND_NODE:
                 if not self._data[MsgKey.QUERY_ARGS].get(MsgKey.TARGET_ID):
                     raise MsgError(f"Failed to validate find_node query message, target node not found in arguments")
+                print("TYPE:", type(self._data[MsgKey.QUERY_ARGS].get(MsgKey.TARGET_ID)))
+                if type(self._data[MsgKey.QUERY_ARGS].get(MsgKey.TARGET_ID)) != int:
+                    raise MsgError(f"Failed to validate find_node query message, target node must be integer")
             case QueryType.FIND_KEY:
                 ...
             case _:
@@ -252,10 +256,9 @@ class FindNodeMsg(QueryMsgBaseClass):
     def target_id(self):
         return self._data[MsgKey.QUERY_ARGS].get(MsgKey.TARGET_ID)
 
-    def set_target_id(self, uuid: int, ip: str, port: int):
-        self._data[MsgKey.QUERY_ARGS][MsgKey.TARGET_ID] = { IdKey.UUID: uuid,
-                                                            IdKey.IP:  ip,
-                                                            IdKey.PORT: port }
+    @target_id.setter
+    def target_id(self, uuid: int):
+        self._data[MsgKey.QUERY_ARGS][MsgKey.TARGET_ID] = uuid
 
 
 class FindKeyMsg(QueryMsgBaseClass):

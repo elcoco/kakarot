@@ -8,26 +8,31 @@ import logging
 
 from queue import Queue
 
-from p2p.node import Node
+from p2p.node import Node, Peer
 from core import state
 from core.utils import debug, info, error
+from core.config import Config
+
 
 logger = logging.getLogger("kakarot")
 
 """
 TODO: Next step would be to implement ping and request/respond to find peers
-      That would allow us to test all the network routing """
+      That would allow us to test all the network routing
+
+TODO: Create cli find_node, ping etc... for easier testing
+"""
 
 
 class PeerThread(threading.Thread):
-    def __init__(self, keyspace: int, alpha: int):
+    def __init__(self, uuid: int, keyspace: int, bucket_size: int, alpha: int):
         threading.Thread.__init__(self)
         self._stopped = False
         self._keyspace = keyspace
 
-        self._uuid = self._get_uuid(keyspace)
-        self._port = self._uuid
-        self._node = None
+        self._bucket_size = bucket_size
+        self._uuid = uuid
+        self._port = uuid
         self._alpha = alpha
 
     def is_stopped(self):
@@ -51,11 +56,9 @@ class PeerThread(threading.Thread):
 
         t_start = time.time()
 
-        self._node = Node(self._get_int_ip(), self._port, self._keyspace, self._alpha, self._uuid)
+        self._node = Node("127.0.0.1", self._port, self._keyspace, self._bucket_size, self._alpha, uuid=self._uuid)
         info("peer_thread", str(self._uuid), f"starting {self._node}")
-
         self._node.run()
-
         self._stopped = True
         t_delta = round(time.time()-t_start,1)
         info("peer_thread", str(self._uuid), f"Finished execution in {t_delta} seconds")
@@ -63,11 +66,12 @@ class PeerThread(threading.Thread):
 
 class ServerThreadManager():
     """ Manages a pool of threads that get new data from servers """
-    def __init__(self, amount: int, keyspace: int, alpha: int):
-        self._amount = amount
-        self._keyspace = keyspace
+    def __init__(self, state: Config):
+        self._bucket_size = state.bucket_size
+        self._amount = state.peers
+        self._keyspace = state.keyspace
+        self._alpha = state.alpha
         self._pool: list[PeerThread] = []
-        self._alpha = alpha
 
     def stop(self):
         for t in self._pool:
@@ -76,14 +80,42 @@ class ServerThreadManager():
         t_elapsed = time.time() - self._t_start
         info("thread_manager", "done", f"all nodes ran in {round(t_elapsed, 1)} seconds")
 
+    def _get_uuid(self, max):
+        """ To make testing slightly easier we use port numbers equal to the UUID's.
+            This means that we should start at UUID=1024 so we don't have to run as root """
+        return random.randrange(1024, 2**max)
+
+    def _pick_random(self, lst: list[Peer], amount: int):
+        return [random.choice(lst) for _ in range(amount)]
+
     def run(self):
         debug("thread_manager", "init", f"Starting {self._amount} nodes")
         self._t_start = time.time()
 
+        # create a list of all uuid's so we can create random bootstrap lists for every node that we start
+        node_list = []
+
         for _ in range(self._amount):
-            t = PeerThread(self._keyspace, self._alpha)
+            uuid = self._get_uuid(self._keyspace)
+            peer = Peer(uuid, "127.0.0.1", uuid)
+            node_list.append(peer)
+
+            # NOTE: we use uuid as port number to make testing with large amount of nodes easier to manage
+            t = PeerThread(peer.uuid, self._keyspace, self._bucket_size, self._alpha)
             self._pool.append(t)
             t.start()
+
+        # Wait till all threads have started
+
+        for t in self._pool:
+            bootstrap_lst = self._pick_random(node_list, 1)
+            t._node.bootstrap(bootstrap_lst)
+
+        time.sleep(5)
+        for t in self._pool:
+            print(t._node)
+            print(t._node._table)
+            print("*" * 50)
 
         while True:
             time.sleep(0.1)
@@ -96,19 +128,70 @@ class Kakarot():
     def get_int_ip(self):
         return socket.gethostbyname(socket.gethostname())
 
+    def _parse_id(self, id: str):
+        try:
+            target_uuid, rest = id.split("@")
+            target_ip, target_port  = rest.split(":")
+            target_uuid = int(target_uuid)
+            target_port = int(target_port)
+            return Peer(target_uuid, target_ip, target_port)
+        except ValueError as e:
+            error("kakarot", "do_ping", f"Failed to parse target: {state.target}, {e}")
+            return
+
+    def run_node(self, state):
+        node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node.start()
+
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            node.stop()
+
+        print("done")
+
+    def do_ping(self, state):
+        if (target := self._parse_id(state.target)) == None:
+            return
+
+        node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node.start()
+        time.sleep(1)
+        node.ping(target.uuid, target.ip, target.port)
+        node.stop()
+
+        print("done")
+
+    def do_find_node(self, state):
+        if (target := self._parse_id(state.target)) == None:
+            return
+
+        node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node.start()
+        time.sleep(1)
+
+        node.find_node(target.uuid)
+
+        node.stop()
+
+        print("done")
+
     def run(self, state):
         if state.do_test:
-            tm = ServerThreadManager(state.peers, state.keyspace, state.bucket_size, state.alpha)
+            tm = ServerThreadManager(state)
             try:
                 tm.run()
             except KeyboardInterrupt:
                 tm.stop()
 
         elif state.do_run:
-            n = Node(self.get_int_ip(), state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
-            print(n)
-            n.run()
+            self.run_node(state)
 
+        elif state.do_ping:
+            self.do_ping(state)
+        elif state.do_find_node:
+            self.do_find_node(state)
 
 
 

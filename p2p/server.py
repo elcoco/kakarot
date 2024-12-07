@@ -4,7 +4,7 @@ import select
 import json
 from typing import Callable, Optional, Any
 
-from p2p.api_parsers import Bencoder, BencDecodeError
+from p2p.bencode import Bencoder, BencDecodeError
 from core.utils import debug, info, error
 
 from p2p.message import MsgKey, ErrCode, MsgType, QueryType
@@ -93,13 +93,15 @@ class ConnThread(threading.Thread):
 
             # TODO: needs to handle errors
             # Runs appropriate callback and sends returned message back to requesting node
-            self.send(self._callbacks[qtype](msg).to_bencoding())
+            res_msg = self._callbacks[qtype](msg)
+            print(res_msg)
+            self.send(res_msg.to_bencoding())
 
         info("conn_thread", "run", "disconnected")
 
 
-class Api(threading.Thread):
-    """ Api is a thread that listens for connections. When a peer wants to connect to us it will
+class Server(threading.Thread):
+    """ Server is a thread that listens for connections. When a peer wants to connect to us it will
         start a new thread. This thread will parse the message. If it is a query message it will
         execute the appropriate callback to handle it. """
     def __init__(self, ip: str, port: int, callbacks: dict[str,Callable], timeout: int=5, max_threads: int=10) -> None:
@@ -130,12 +132,12 @@ class Api(threading.Thread):
                 alive += 1
         return alive
 
-    def _listen(self, timeout=1):
+    def listen(self, timeout=1):
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-            info("api", "listen", f"listening on {self._ip}:{self._port}")
+            info("server", "listen", f"listening on {self._ip}:{self._port}")
 
             s.bind((self._ip, self._port))
             s.listen(1)
@@ -150,7 +152,7 @@ class Api(threading.Thread):
 
                 for s in readable:
                     if (alive := self._check_pool()) >= self._max_threads:
-                        error("api", "listen", f"denying connection, too many active connections: {alive}")
+                        error("server", "listen", f"denying connection, too many active connections: {alive}")
                         break
 
                     conn, addr = s.accept()
@@ -159,7 +161,7 @@ class Api(threading.Thread):
                     t = ConnThread(conn, addr[0], addr[1], self._callbacks)
                     t.start()
 
-        info("api", "listen", f"closing api")
+        info("server", "listen", f"closing server")
 
         # close all client connections
         for t in self._pool:
@@ -169,6 +171,3 @@ class Api(threading.Thread):
 
     def stop(self):
         self._stopped = True
-
-    def run(self):
-        self._listen()

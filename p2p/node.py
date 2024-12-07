@@ -7,8 +7,8 @@ from dataclasses import dataclass
 import time
 import socket
 
-from p2p.api import Api
-from p2p.api_parsers import BencDecodeError
+from p2p.server import Server
+from p2p.bencode import BencDecodeError
 from p2p.message import PingMsg, StoreMsg, FindNodeMsg, FindKeyMsg, ResponseMsg, ErrorMsg
 from p2p.message import MsgError
 from core.utils import debug, info, error
@@ -37,7 +37,12 @@ class Peer():
         """ Compare uuid's and find common most significant bits.
             This is used to determin the bucket we should store this peer """
 
-        assert(origin != self.uuid)
+        #assert(origin != self.uuid)
+
+        # if peer == origin, all bits match so take last bucket as closest
+        if origin == self.uuid:
+            print("!!!!!!!", keyspace-1)
+            return keyspace - 1
 
         # get the non matching bits between peer and origin node
         distance = self.get_distance(origin)
@@ -50,74 +55,6 @@ class Peer():
                 count += 1
         return count
 
-    def _send_recv_msg(self, msg_req, timeout=5):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-
-            t_start = time.time()
-
-            try:
-                s.connect((self.ip, self.port))
-            except ConnectionRefusedError as e:
-                error("peer", "send_recv", str(e))
-                return
-
-            s.settimeout(timeout)
-
-            msg_bin = str(msg_req.to_bencoding()).encode()
-            bytes_sent = 0
-
-            while bytes_sent < len(msg_bin):
-                try:
-                    n = s.send(msg_bin)
-                except BrokenPipeError as e:
-                    error("peer", "send_recv", str(e))
-                    return
-
-                if n == 0:
-                    error("peer", "send_recv", f"connection broken")
-                    return
-                bytes_sent += n
-
-            data = b""
-
-            try:
-                while (chunk := s.recv(MSG_LENGTH)):
-                    data += chunk
-            except TimeoutError:
-                error("peer", "send_recv", "Connection timedout")
-                return
-            except ConnectionResetError as e:
-                error("peer", "send_recv", str(e))
-                return
-
-
-            try:
-                msg_res = ResponseMsg()
-                msg_res.from_bencoding(data.decode())
-                msg_res.response_time = time.time() - t_start
-            except MsgError as e:
-                error("peer", "send_recv", str(e))
-                return
-            except BencDecodeError as e:
-                error("peer", "send_recv", str(e))
-                return
-
-            if msg_res.transaction_id != msg_req.transaction_id:
-                error("peer", "send_recv", f"communication error, transaction_id error: {msg_req.transaction_id} != {msg_res.transaction_id}")
-                return
-
-        return msg_res
-
-    def ping(self, origin: "Peer"):
-        """ Ping peer and return respond time """
-        info("peer", "ping", "sending ping")
-        msg_req = PingMsg(uuid=origin.uuid, ip=origin.ip, port=origin.port)
-        print(msg_req)
-        if (msg_res := self._send_recv_msg(msg_req)):
-            info("peer", "send_recv", f"response time: {msg_res.response_time}")
-            print(msg_res)
-            return msg_res.response_time
-
 
 class Lock():
     _is_locked = False
@@ -125,7 +62,7 @@ class Lock():
     def __enter__(self):
         info("lock", "enter", "waiting for lock")
         while Lock._is_locked:
-            ...
+            time.sleep(0.01)
         Lock._is_locked = True
         info("lock", "enter", "aquired lock")
 
@@ -187,37 +124,32 @@ class RouteTable():
                 out.append(f"  {i_peer:2}: {str(peer)} {peer.get_distance(self._origin_uuid)}")
         return "\n".join(out)
 
-    def has_peer(self, origin: Peer, target: Peer):
-        bucket = origin.find_significant_common_bits(target.uuid, self._keyspace)
-        for peer in self._k_buckets[bucket]:
-            if peer == target:
-                return peer
-
-    def get_closest_nodes(self, origin: Peer, target: Peer, amount: Optional[int]=None):
+    def get_closest_nodes(self, origin: Peer, target: int, amount: Optional[int]=None):
         """ Get <amount> closest nodes from target """
         if amount == None:
             amount = self._bucket_size
 
         out = []
 
-        bucket = origin.find_significant_common_bits(target.uuid, self._keyspace)
+        bucket = origin.find_significant_common_bits(target, self._keyspace)
         n = bucket
 
-        # Go over all buckets and sort peers so that we get a list of sorted peers by closeness
-        while len(out) != amount:
+        with Lock():
+            # Go over all buckets and sort peers so that we get a list of sorted peers by closeness
+            while len(out) != amount:
 
-            peers_sorted = sorted(self._k_buckets[n], key=lambda x: target.get_distance(x.uuid))
-            out += peers_sorted[:amount-len(out)]
+                peers_sorted = sorted(self._k_buckets[n], key=lambda x: x.get_distance(target))
+                out += peers_sorted[:amount-len(out)]
 
-            if n == self._keyspace-1:
-                n = bucket-1
-            elif n >= bucket:
-                n += 1
-            elif n == 0:
-                break
-            else:
-                n -= 1
-        return out
+                if n == self._keyspace-1:
+                    n = bucket-1
+                elif n >= bucket:
+                    n += 1
+                elif n == 0:
+                    break
+                else:
+                    n -= 1
+            return out
 
 
     def _bucket_has_peer(self, bucket: int, peer: Peer):
@@ -233,9 +165,10 @@ class RouteTable():
         """ We have a least seen eviction policy and we prefer old peers because they tend to
             be reliable than new peers. Apparently research concluded that peers that have been
             online for an hour are likely to be online for another hour. """
-        with Lock():
-            bucket = peer.find_significant_common_bits(origin.uuid, self._keyspace)
+        bucket = peer.find_significant_common_bits(origin.uuid, self._keyspace)
+        print("insert peer")
 
+        with Lock():
             if (p := self._bucket_has_peer(bucket, peer)):
                 self._k_buckets[bucket].remove(p)
                 self._k_buckets[bucket].append(peer)
@@ -261,8 +194,16 @@ class RouteTable():
                 info("route_table", "insert_peer", "adding new peer")
 
 
-class Node():
+class Node(Server):
     def __init__(self, ip: str, port: int, key_size: int, bucket_size: int, alpha: int, uuid: Optional[int]=None) -> None:
+
+        # Specify the callbacks that need to run to respond to incoming query messages
+        callbacks = { "ping":      self.res_ping_callback,
+                      "store":     self.res_store_callback,
+                      "find_node": self.res_find_node_callback,
+                      "find_key":  self.res_find_key_callback }
+
+        Server.__init__(self, ip, port, callbacks)
 
         # Size of network uuid/keys in bits
         self._key_size = key_size
@@ -287,19 +228,73 @@ class Node():
 
         self._table = RouteTable(key_size, bucket_size, self._uuid)
 
-        self._is_stopped = False
-
     def __repr__(self):
         return f"NODE: {self._ip}:{self._port} => {self._uuid}"
 
     def _create_uuid(self):
         return random.randrange(0, (2**self._key_size)-1)
 
-    def stop(self):
-        self._is_stopped = True
+    def _send_request(self, ip: str, port: int, msg_req, timeout=5):
+        """ Send a request message and receive response """
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+
+            t_start = time.time()
+
+            try:
+                s.connect((ip, port))
+            except ConnectionRefusedError as e:
+                error("peer", "send_recv", str(e))
+                return
+
+            s.settimeout(timeout)
+
+            msg_bin = str(msg_req.to_bencoding()).encode()
+            bytes_sent = 0
+
+            while bytes_sent < len(msg_bin):
+                try:
+                    n = s.send(msg_bin)
+                except BrokenPipeError as e:
+                    error("peer", "send_recv", str(e))
+                    return
+
+                if n == 0:
+                    error("peer", "send_recv", f"connection broken")
+                    return
+                bytes_sent += n
+
+            data = b""
+
+            try:
+                while (chunk := s.recv(MSG_LENGTH)):
+                    data += chunk
+            except TimeoutError:
+                error("peer", "send_recv", "Connection timedout")
+                return
+            except ConnectionResetError as e:
+                error("peer", "send_recv", str(e))
+                return
+
+
+            try:
+                msg_res = ResponseMsg()
+                msg_res.from_bencoding(data.decode())
+                msg_res.response_time = time.time() - t_start
+            except MsgError as e:
+                error("peer", "send_recv", str(e))
+                return
+            except BencDecodeError as e:
+                error("peer", "send_recv", str(e))
+                return
+
+            if msg_res.transaction_id != msg_req.transaction_id:
+                error("peer", "send_recv", f"communication error, transaction_id error: {msg_req.transaction_id} != {msg_res.transaction_id}")
+                return
+
+        return msg_res
 
     def res_ping_callback(self, msg: PingMsg) -> ResponseMsg|ErrorMsg:
-        """ Called by Api(), respond to incoming PING query message """
+        """ Called by Server(), respond to incoming PING query message """
         # TODO: Check if we have to save the peer in the routing table
         # echo -n "d1:t2:xx1:y1:q1:q4:ping1:ad2:idd4:uuidi666e2:ip9:127.0.0.14:porti666eeee" | ncat localhost 12345
         sender = Peer(**msg.sender_id)
@@ -308,14 +303,13 @@ class Node():
         return ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
 
     def res_find_node_callback(self, msg: FindNodeMsg) -> ResponseMsg|ErrorMsg:
-        """ Called by Api(), respond to incoming FIND_NODE query message """
+        """ Called by Server(), respond to incoming FIND_NODE query message """
         # echo -n d1:t2:xx1:y1:q1:q9:find_node1:ad2:idd4:uuidi666e2:ip9:127.0.0.14:porti666ee6:targetd4:uuidi98766e2:ip9:127.0.0.14:porti98766eeee | ncat localhost 12345
         sender = Peer(**msg.sender_id)
-        target = Peer(**msg.target_id)
         origin = Peer(self._uuid, self._ip, self._port)
         self._table.insert_peer(sender, origin)
 
-        peers = self._table.get_closest_nodes(sender, target)
+        peers = self._table.get_closest_nodes(sender, msg.target_id)
         # TODO: write and read address={ip, port}
 
         res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
@@ -325,49 +319,73 @@ class Node():
         print(res)
         return res
 
-
     def res_store_callback(self, msg: StoreMsg) -> ResponseMsg|ErrorMsg:
-        """ Called by Api(), respond to incoming STORE query message """
+        """ Called by Server(), respond to incoming STORE query message """
         sender = Peer(**msg.sender_id)
         origin = Peer(self._uuid, self._ip, self._port)
         self._table.insert_peer(sender, origin)
 
     def res_find_key_callback(self, msg: FindKeyMsg) -> ResponseMsg|ErrorMsg:
-        """ Called by Api(), respond to incoming FIND_KEY query message """
+        """ Called by Server(), respond to incoming FIND_KEY query message """
         sender = Peer(**msg.sender_id)
         origin = Peer(self._uuid, self._ip, self._port)
         self._table.insert_peer(sender, origin)
 
-    def run(self):
+    def ping(self, uuid: int, ip: str, port: int):
+        """ Ping peer and return respond time """
+        info("peer", "ping", "sending ping")
+        msg_req = PingMsg(uuid=self._uuid, ip=self._ip, port=self._port)
+        if (msg_res := self._send_request(ip, port, msg_req)):
+            info("peer", "ping", f"response time: {msg_res.response_time}")
+            print(msg_res)
+            return msg_res.response_time
+
+    def find_node(self, target_uuid: int):
+        """ Initiate a node lookup """
+        info("peer", "find_node", "sending find_node")
         origin = Peer(self._uuid, self._ip, self._port)
-        for _ in range(2000):
-            n = random.randrange(0, 2**self._key_size-1)
-            self._table.insert_peer(Peer(n, "127.0.0.1", n), origin)
-        ##self._table.insert_peer(Peer(9988, "127.0.0.1", 9988), self._uuid)
-        #self._table.insert_peer(Peer(22345, "127.0.0.1", 22345), origin)
-        #peer = Peer(22345, "127.0.0.1", 22345)
-        #peer.ping(origin)
 
-        print(f"self: {self._uuid:016b}")
+        for peer in self._table.get_closest_nodes(origin, target_uuid):
 
-        print(self._table)
+            msg_req = FindNodeMsg(uuid=self._uuid, ip=self._ip, port=self._port)
+            msg_req.target_id = target_uuid
+            print(msg_req)
 
-        callbacks = { "ping":      self.res_ping_callback,
-                      "store":     self.res_store_callback,
-                      "find_node": self.res_find_node_callback,
-                      "find_key":  self.res_find_key_callback }
+            if (msg_res := self._send_request(peer.ip, peer.port, msg_req)):
+                info("peer", "find_node", f"response time: {msg_res.response_time}")
+                print(msg_res)
+                return msg_res
 
-        api = Api("", self._port, callbacks)
-        api.start()
+    def bootstrap(self, peers):
+        """ Add bootstrap nodes to table and do a lookup for our own uuid in these new
+            nodes to populate our and their routing table. """
+        origin = Peer(self._uuid, self._ip, self._port)
 
-        info("node", "run", f"Entering main event loop")
+        for peer in peers:
+            info("node", "bootstrap", str(peer))
+            self._table.insert_peer(peer, origin)
 
-        while True:
-            # main event loop
-            try:
-                time.sleep(1)
-            except KeyboardInterrupt:
-                api.stop()
-                break
+        self.find_node(origin.uuid)
+
+        print("end")
+
+
+    def run(self):
+        #origin = Peer(self._uuid, self._ip, self._port)
+        #for _ in range(200):
+        #    n = random.randrange(0, 2**self._key_size-1)
+        #    self._table.insert_peer(Peer(n, "127.0.0.1", n), origin)
+
+        #print(f"self: {self._uuid:016b}")
+
+        #print(self._table)
+
+        #server = Server("", self._port, callbacks)
+        #server.start()
+
+        info("node", "run", f"starting listener")
+
+        # This starts blocking server that listens for incoming connections
+        self.listen()
 
         info("node", "run", f"done")
