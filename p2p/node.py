@@ -30,11 +30,6 @@ class Peer():
         return f"{self.uuid:016b}@{self.ip}:{self.port}"
         #return f"{self.uuid:04X}@{self.ip}:{self.port}"
 
-    def to_dict(self):
-        return {"uuid" : self.uuid,
-                "ip" : self.ip,
-                "port" : self.port }
-
     def get_distance(self, origin):
         return self.uuid ^ origin
 
@@ -192,6 +187,12 @@ class RouteTable():
                 out.append(f"  {i_peer:2}: {str(peer)} {peer.get_distance(self._origin_uuid)}")
         return "\n".join(out)
 
+    def has_peer(self, origin: Peer, target: Peer):
+        bucket = origin.find_significant_common_bits(target.uuid, self._keyspace)
+        for peer in self._k_buckets[bucket]:
+            if peer == target:
+                return peer
+
     def get_closest_nodes(self, origin: Peer, target: Peer, amount: Optional[int]=None):
         """ Get <amount> closest nodes from target """
         if amount == None:
@@ -318,9 +319,11 @@ class Node():
         # TODO: write and read address={ip, port}
 
         res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
-        res.return_values = {"nodes" : [{"uuid":p.uuid, "address" : f"{p.ip}:{p.port}"} for p in peers]}
+        #res.return_values = {"nodes" : [{"id":p.uuid, "address" : f"{p.ip}:{p.port}"} for p in peers]}
+        res.return_values = {"nodes" : [p.__dict__ for p in peers]}
 
         print(res)
+        return res
 
 
     def res_store_callback(self, msg: StoreMsg) -> ResponseMsg|ErrorMsg:

@@ -131,8 +131,8 @@ class ResponseMsg(MsgBaseClass):
         if not MsgKey.RESPONSE_ARGS in self._data.keys():
             self._data[MsgKey.RESPONSE_ARGS] = {}
         self._data[MsgKey.RESPONSE_ARGS][MsgKey.SENDER_ID] = { IdKey.UUID: uuid,
-                                                   IdKey.IP:   ip,
-                                                   IdKey.PORT: port }
+                                                               IdKey.IP:   ip,
+                                                               IdKey.PORT: port }
 
     @property
     def response_time(self):
