@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger('kakarot')
 
+CATEGORY_LEN = 10
 
 def colorize(string: str, color: str) -> str:
     colors = {}
@@ -28,6 +29,9 @@ def colorize(string: str, color: str) -> str:
 
 def info(category: str, action: str, msg: str):
     """ Display pretty messages """
+    category = f"{category:12}"
+    action = f"{action:12}"
+
     category = colorize(category, 'blue')
     action = colorize(action, 'magenta')
     msg = colorize(msg, 'default')
@@ -36,6 +40,9 @@ def info(category: str, action: str, msg: str):
 
 def error(category: str, action: str, msg: str):
     """ Display pretty messages """
+    category = f"{category:12}"
+    action = f"{action:12}"
+
     category = colorize(category, 'red')
     action = colorize(action, 'magenta')
     msg = colorize(msg, 'default')

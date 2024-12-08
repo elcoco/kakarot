@@ -6,6 +6,7 @@ import requests
 from dataclasses import dataclass
 import time
 import socket
+import threading
 
 from p2p.server import Server
 from p2p.bencode import BencDecodeError
@@ -86,8 +87,14 @@ class Peer():
     port: int
 
     def __repr__(self):
-        return f"{self.uuid:016b}@{self.ip}:{self.port}"
+        return f"{self.uuid:5} @ {self.ip}:{self.port:5}"
+        #return f"{self.uuid:016b}@{self.ip}:{self.port}"
         #return f"{self.uuid:04X}@{self.ip}:{self.port}"
+
+    def to_dict(self):
+        return { "uuid" : self.uuid,
+                 "ip" : self.ip,
+                 "port" : self.port }
 
     def get_distance(self, origin_uuid):
         return self.uuid ^ origin_uuid
@@ -118,20 +125,65 @@ class Peer():
             print(msg_res)
             return msg_res.response_time
 
+""" TODO: Implement recursive algorithm utilizing the PeerList class to keep track of the returned peers """
+
+class PeerList():
+    """ A list of peers, ordered by closeness to a uuid """
+    def __init__(self, peers: list[Peer], target: Peer, amount: int):
+        self._list = []
+        self._closest: Optional[int] = None
+        self._target = target
+
+        # the max size of list
+        self._amount = amount
+
+        for peer in peers:
+            self.add(peer)
+
+        # store peers that were not closer so we can query them later if necessary
+        self._rejected: list[Peer] = []
+
+    def add(self, peer: Peer):
+        """ Add peer to list if it is closer than the peers already in the list """
+        if self._closest == None:
+            self._closest = self._target.get_distance(peer.uuid)
+            self._list.append(peer)
+        elif (distance := self._target.get_distance(peer.uuid)) < self._closest:
+            self._closest = distance
+            self._list.append(peer)
+        else:
+            self._rejected.append(peer)
+
+    def is_full(self):
+        return len(self._list) >= self._amount
+
+    def get_rejected(self, amount):
+        """ Get closest peer from list of rejected peers """
+        if not self._rejected:
+            return
+        rejected = sorted(self._rejected, key=lambda x: x.get_distance(self._target.uuid))
+        ret = rejected[:amount]
+        self._rejected = rejected[amount:]
+        return ret
+
+
+
+
+
 
 class Lock():
     _is_locked = False
 
     def __enter__(self):
-        info("lock", "enter", "waiting for lock")
+        #info("lock", "enter", "waiting for lock")
         while Lock._is_locked:
             time.sleep(0.01)
         Lock._is_locked = True
-        info("lock", "enter", "aquired lock")
+        #info("lock", "enter", "aquired lock")
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         Lock._is_locked = False
-        info("lock", "enter", "released lock")
+        #info("lock", "enter", "released lock")
 
 
 class RouteTable():
@@ -139,6 +191,7 @@ class RouteTable():
         self._keyspace = keyspace
         self._bucket_size = bucket_size
         self._origin_uuid = origin_uuid
+        self._lock = threading.Lock()
 
         r"""
         source: https://www.youtube.com/watch?v=NxhZ_c8YX8E
@@ -182,7 +235,7 @@ class RouteTable():
         for i_bucket, bucket in enumerate(self._k_buckets):
             if not bucket:
                 continue
-            header = f"BUCKET {i_bucket}:"
+            header = f"BUCKET {i_bucket:2}:"
             indent = len(header) * " "
 
             for i_peer, peer in enumerate(bucket):
@@ -202,10 +255,10 @@ class RouteTable():
         bucket = origin.find_significant_common_bits(target, self._keyspace)
         n = bucket
 
-        with Lock():
+        with self._lock:
             # Go over all buckets and sort peers so that we get a list of sorted peers by closeness
             while len(out) != amount:
-                print(target, f"bucket={bucket}", f"n={n}")
+                #print(target, f"bucket={bucket}", f"n={n}")
                 assert n < len(self._k_buckets), f"n={n}, k_buckets={len(self._k_buckets)}"
 
                 peers_sorted = sorted(self._k_buckets[n], key=lambda x: x.get_distance(target))
@@ -238,9 +291,8 @@ class RouteTable():
             be reliable than new peers. Apparently research concluded that peers that have been
             online for an hour are likely to be online for another hour. """
         bucket = peer.find_significant_common_bits(origin_uuid, self._keyspace)
-        print("insert peer")
 
-        with Lock():
+        with self._lock:
             if (p := self._bucket_has_peer(bucket, peer)):
                 self._k_buckets[bucket].remove(p)
                 self._k_buckets[bucket].append(peer)
@@ -254,16 +306,25 @@ class RouteTable():
                     # Old peer is alive, discard new peer because we prefer our old peers (more trustworthy)
                     self._k_buckets[bucket].remove(oldest_peer)
                     self._k_buckets[bucket].append(oldest_peer)
-                    info("route_table", "insert_peer", "bucket full, discard peer")
+                    info("route_table", "insert_peer", "bucket full, discard peer: {peer}")
                 else:
                     # peer doesn't respond so we replace it
                     self._k_buckets[bucket].remove(oldest_peer)
                     self._k_buckets[bucket].append(peer)
-                    info("route_table", "insert_peer", "old peer unreachable, adding new peer")
+                    info("route_table", "insert_peer", "old peer unreachable, adding new peer: {peer}")
 
             else:
                 self._k_buckets[bucket].append(peer)
-                info("route_table", "insert_peer", "adding new peer")
+                info("route_table", "insert_peer", f"adding new peer: {peer}")
+
+    def remove_peer(self, peer: Peer, origin_uuid: int):
+        bucket = peer.find_significant_common_bits(origin_uuid, self._keyspace)
+
+        with self._lock:
+            if (p := self._bucket_has_peer(bucket, peer)):
+                self._k_buckets[bucket].remove(p)
+            else:
+                error("route_table", "remove", f"Failed to remove peer from bucket '{bucket}', peer not found: {peer}")
 
 
 class Node(Server):
@@ -280,11 +341,11 @@ class Node(Server):
         # Size of network uuid/keys in bits
         self._key_size = key_size
 
-        # Amount of peers stored per bucket
+        # Amount of peers stored per bucket (K)
         self._bucket_size = bucket_size
 
-        self._ip = ip
-        self._port = port
+        #self._ip = ip
+        #self._port = port
 
         if uuid == None:
             self._uuid = self._create_uuid()
@@ -306,38 +367,39 @@ class Node(Server):
     def _create_uuid(self):
         return random.randrange(0, (2**self._key_size)-1)
 
-    def res_ping_callback(self, msg: PingMsg, ip: str, port: int) -> ResponseMsg|ErrorMsg:
+    def res_ping_callback(self, msg: PingMsg) -> ResponseMsg|ErrorMsg:
         """ Called by Server(), respond to incoming PING query message """
         # TODO: Check if we have to save the peer in the routing table
         # echo -n "d1:t2:xx1:y1:q1:q4:ping1:ad2:idd4:uuidi666e2:ip9:127.0.0.14:porti666eeee" | ncat localhost 12345
-        sender = Peer(msg.sender_id, ip, port)
+        sender = Peer(msg.sender_uuid, msg.sender_ip, msg.sender_port)
         self._table.insert_peer(sender, self._uuid)
-        return ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid)
+        return ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
 
-    def res_find_node_callback(self, msg: FindNodeMsg, ip: str, port: int) -> ResponseMsg|ErrorMsg:
+    def res_find_node_callback(self, msg: FindNodeMsg) -> ResponseMsg|ErrorMsg:
         """ Called by Server(), respond to incoming FIND_NODE query message """
         # echo -n d1:t2:xx1:y1:q1:q9:find_node1:ad2:idd4:uuidi666e2:ip9:127.0.0.14:porti666ee6:targetd4:uuidi98766e2:ip9:127.0.0.14:porti98766eeee | ncat localhost 12345
-        sender = Peer(msg.sender_id, ip, port)
-        self._table.insert_peer(sender, self._uuid)
+        sender = Peer(msg.sender_uuid, msg.sender_ip, msg.sender_port)
 
-        peers = self._table.get_closest_nodes(sender, msg.target_id)
+        peers = self._table.get_closest_nodes(sender, msg.target_uuid)
+
+        self._table.insert_peer(sender, self._uuid)
         # TODO: write and read address={ip, port}
 
-        res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid)
-        #res.return_values = {"nodes" : [{"id":p.uuid, "address" : f"{p.ip}:{p.port}"} for p in peers]}
-        res.return_values = {"nodes" : [p.__dict__ for p in peers]}
+        for i,p in enumerate(peers):
+            print(f"[{i}] find_node_cb returning: {p}")
 
-        print(res)
+        res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
+        res.return_values = {"nodes" : [p.to_dict() for p in peers]}
         return res
 
-    def res_store_callback(self, msg: StoreMsg, ip: str, port: int) -> ResponseMsg|ErrorMsg:
+    def res_store_callback(self, msg: StoreMsg) -> ResponseMsg|ErrorMsg:
         """ Called by Server(), respond to incoming STORE query message """
-        sender = Peer(msg.sender_id, ip, port)
+        sender = Peer(msg.sender_uuid, msg.sender_ip, msg.sender_port)
         self._table.insert_peer(sender, self._uuid)
 
-    def res_find_key_callback(self, msg: FindKeyMsg, ip: str, port: int) -> ResponseMsg|ErrorMsg:
+    def res_find_key_callback(self, msg: FindKeyMsg) -> ResponseMsg|ErrorMsg:
         """ Called by Server(), respond to incoming FIND_KEY query message """
-        sender = Peer(msg.sender_id, ip, port)
+        sender = Peer(msg.sender_uuid, msg.sender_ip, msg.sender_port)
         self._table.insert_peer(sender, self._uuid)
 
     def ping(self, uuid: int, ip: str, port: int):
@@ -346,29 +408,78 @@ class Node(Server):
         target = Peer(uuid, ip, port)
         target.ping(self._uuid)
 
-    def find_node(self, target_uuid: int):
-        """ Initiate a recursive node lookup """
-        # TODO: follow recursive algorythm from paper
-        info("peer", "find_node", "sending find_node")
-        origin = Peer(self._uuid, self._ip, self._port)
+    def find_node_rec(self, target_uuid, peers: list[Peer], contacted_peers: list[Peer], trace, level=1):
+        new_peers = []
+        print("iteration:", level)
 
-        for peer in self._table.get_closest_nodes(origin, target_uuid):
+        trace.append(peers)
 
-            msg_req = FindNodeMsg(uuid=self._uuid)
-            msg_req.target_id = target_uuid
-            print(msg_req)
+        # we found
+        if len(contacted_peers) >= self._bucket_size:
+            ...
+
+        #for peer in peers:
+        #    if peer.uuid == target_uuid:
+        #        info("peer", "find_node", f"found peer: {peer}")
+        #        trace.append([peer])
+        #        return trace
+
+        for peer in peers:
+            msg_req = FindNodeMsg(uuid=self._uuid, ip=self._ip, port=self._port)
+            msg_req.target_uuid = target_uuid
 
             if (msg_res := send_request(peer.ip, peer.port, msg_req)):
-                info("peer", "find_node", f"response time: {msg_res.response_time}")
-                print(msg_res)
-                return msg_res
+                contacted_peers.append(peer)
+
+                # add received peers to new_peers if not already contacted
+                tmp = [Peer(**x) for x in msg_res.return_values["nodes"]]
+                new_peers += [p for p in tmp if p not in contacted_peers]
+
+                for p in new_peers:
+                    self._table.insert_peer(p, self._uuid)
+
+                print(f"received uncontacted peers from {peer}:")
+                for p in new_peers:
+                    print(f"  {p}")
+
+            else:
+                # Request failed, remove peer from our routing table (if it's there)
+                self._table.remove_peer(peer, self._uuid)
+
+
+        if new_peers:
+            new_peers = sorted(new_peers, key=lambda x: x.get_distance(target_uuid))
+            peers = new_peers[:self._alpha]
+            self.find_node_rec(target_uuid, peers, contacted_peers, trace, level=level+1)
+
+        return trace
+
+    def find_node(self, target_uuid: int):
+        """ Initiate a recursive node lookup """
+        info("peer", "find_node", f"sending find_node: {target_uuid}")
+
+        # get the <alpha> closest peers we know of
+        origin = Peer(self._uuid, self._ip, self._port)
+        closest_peers = self._table.get_closest_nodes(origin, target_uuid, amount=self._bucket_size)
+        peers = closest_peers[:self._alpha]
+        trace = self.find_node_rec(target_uuid, peers, [], [])
+
+        print("TRACE:")
+        for i,p in enumerate(trace):
+            print(f"  {i}: {p}")
+
+        return
 
     def bootstrap(self, peers):
         """ Add bootstrap nodes to table and do a lookup for our own uuid in these new
             nodes to populate our and their routing table. """
+        origin = Peer(self._uuid, self._ip, self._port)
 
         for peer in peers:
             info("node", "bootstrap", str(peer))
+            if peer == origin:
+                error("node", "bootstrap", "not bootstrapping from ourself!")
+                continue
             self._table.insert_peer(peer, self._uuid)
 
         self.find_node(self._uuid)

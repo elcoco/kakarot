@@ -38,6 +38,8 @@ class PeerThread(threading.Thread):
         self._port = uuid
         self._alpha = alpha
 
+        print(self._uuid, self._port)
+
     def is_stopped(self):
         return self._stopped
 

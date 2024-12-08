@@ -39,7 +39,7 @@ class ConnThread(threading.Thread):
             All message types that are not query messages are considered errors """
 
         with self._conn:
-            info("conn_thread", str(self), f"accepted")
+            info("conn_thread", str(self), f"accepted connection from: {self._ip}:{self._port}")
 
             try:
                 data = self._conn.recv(1024)
@@ -57,8 +57,6 @@ class ConnThread(threading.Thread):
                 self.send(ErrorMsg(code=ErrCode.PROTOCOL, msg=str(e)).to_bencoding())
                 error("conn_thread", str(self), f"{e}")
                 return
-
-            print(json.dumps(parsed, indent=4))
 
             if parsed.get(MsgKey.MSG_TYPE) == None:
                 self.send(ErrorMsg(code=ErrCode.PROTOCOL, msg="missing msg type").to_bencoding())
@@ -93,8 +91,7 @@ class ConnThread(threading.Thread):
 
             # TODO: needs to handle errors
             # Runs appropriate callback and sends returned message back to requesting node
-            res_msg = self._callbacks[qtype](msg, self._ip, self._port)
-            print(res_msg)
+            res_msg = self._callbacks[qtype](msg)
             self.send(res_msg.to_bencoding())
 
         info("conn_thread", "run", "disconnected")
