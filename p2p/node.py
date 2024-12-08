@@ -16,6 +16,65 @@ from core.utils import debug, info, error
 MSG_LENGTH = 1024
 
 
+def send_request(ip: str, port: int, msg_req, timeout=5):
+    """ Send a request message and receive response """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+
+        t_start = time.time()
+
+        try:
+            s.connect((ip, port))
+        except ConnectionRefusedError as e:
+            error("peer", "send_recv", str(e))
+            return
+
+        s.settimeout(timeout)
+
+        msg_bin = str(msg_req.to_bencoding()).encode()
+        bytes_sent = 0
+
+        while bytes_sent < len(msg_bin):
+            try:
+                n = s.send(msg_bin)
+            except BrokenPipeError as e:
+                error("peer", "send_recv", str(e))
+                return
+
+            if n == 0:
+                error("peer", "send_recv", f"connection broken")
+                return
+            bytes_sent += n
+
+        data = b""
+
+        try:
+            while (chunk := s.recv(MSG_LENGTH)):
+                data += chunk
+        except TimeoutError:
+            error("peer", "send_recv", "Connection timedout")
+            return
+        except ConnectionResetError as e:
+            error("peer", "send_recv", str(e))
+            return
+
+        try:
+            msg_res = ResponseMsg()
+            msg_res.from_bencoding(data.decode())
+            msg_res.response_time = time.time() - t_start
+        except MsgError as e:
+            error("peer", "send_recv", str(e))
+            return
+        except BencDecodeError as e:
+            error("peer", "send_recv", str(e))
+            return
+
+        if msg_res.transaction_id != msg_req.transaction_id:
+            error("peer", "send_recv", f"communication error, transaction_id error: {msg_req.transaction_id} != {msg_res.transaction_id}")
+            return
+
+    return msg_res
+
+
 @dataclass
 class Peer():
     """ Represents an external node """
@@ -37,8 +96,6 @@ class Peer():
         """ Compare uuid's and find common most significant bits.
             This is used to determin the bucket we should store this peer """
 
-        #assert(origin != self.uuid)
-
         # if peer == origin, all bits match so take last bucket as closest
         if origin_uuid == self.uuid:
             return keyspace - 1
@@ -53,6 +110,13 @@ class Peer():
             else:
                 count += 1
         return count
+
+    def ping(self, origin_uuid: int):
+        msg_req = PingMsg(uuid=origin_uuid)
+        if (msg_res := send_request(self.ip, self.port, msg_req)):
+            info("peer", "ping", f"response time: {msg_res.response_time}")
+            print(msg_res)
+            return msg_res.response_time
 
 
 class Lock():
@@ -141,21 +205,24 @@ class RouteTable():
         with Lock():
             # Go over all buckets and sort peers so that we get a list of sorted peers by closeness
             while len(out) != amount:
-                #print(target, f"bucket={bucket}", f"n={n}")
+                print(target, f"bucket={bucket}", f"n={n}")
+                assert n < len(self._k_buckets), f"n={n}, k_buckets={len(self._k_buckets)}"
 
                 peers_sorted = sorted(self._k_buckets[n], key=lambda x: x.get_distance(target))
                 out += peers_sorted[:amount-len(out)]
 
-                if n == self._keyspace-1 and n != 0:
-                    n = bucket-1
-                elif n >= bucket:
-                    n += 1
+                if n >= self._keyspace-1:
+                    if bucket == 0:
+                        break
+                    else:
+                        n = bucket -1
                 elif n == 0:
                     break
-                else:
+                elif n < bucket:
                     n -= 1
+                else:
+                    n += 1
             return out
-
 
     def _bucket_has_peer(self, bucket: int, peer: Peer):
         """ Look in bucket for a peer that matches all key:value pairs of <peer> """
@@ -166,11 +233,11 @@ class RouteTable():
     def _bucket_is_full(self, bucket: int):
         return len(self._k_buckets[bucket]) >= self._bucket_size
 
-    def insert_peer(self, peer: Peer, origin: Peer):
+    def insert_peer(self, peer: Peer, origin_uuid: int):
         """ We have a least seen eviction policy and we prefer old peers because they tend to
             be reliable than new peers. Apparently research concluded that peers that have been
             online for an hour are likely to be online for another hour. """
-        bucket = peer.find_significant_common_bits(origin.uuid, self._keyspace)
+        bucket = peer.find_significant_common_bits(origin_uuid, self._keyspace)
         print("insert peer")
 
         with Lock():
@@ -183,7 +250,7 @@ class RouteTable():
                 # Now we need to ping the least seen node (head) and remove it if it doesn't respond
                 oldest_peer = self._k_buckets[bucket][0]
 
-                if oldest_peer.ping(origin):
+                if oldest_peer.ping(origin_uuid):
                     # Old peer is alive, discard new peer because we prefer our old peers (more trustworthy)
                     self._k_buckets[bucket].remove(oldest_peer)
                     self._k_buckets[bucket].append(oldest_peer)
@@ -239,125 +306,59 @@ class Node(Server):
     def _create_uuid(self):
         return random.randrange(0, (2**self._key_size)-1)
 
-    def _send_request(self, ip: str, port: int, msg_req, timeout=5):
-        """ Send a request message and receive response """
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-
-            t_start = time.time()
-
-            try:
-                s.connect((ip, port))
-            except ConnectionRefusedError as e:
-                error("peer", "send_recv", str(e))
-                return
-
-            s.settimeout(timeout)
-
-            msg_bin = str(msg_req.to_bencoding()).encode()
-            bytes_sent = 0
-
-            while bytes_sent < len(msg_bin):
-                try:
-                    n = s.send(msg_bin)
-                except BrokenPipeError as e:
-                    error("peer", "send_recv", str(e))
-                    return
-
-                if n == 0:
-                    error("peer", "send_recv", f"connection broken")
-                    return
-                bytes_sent += n
-
-            data = b""
-
-            try:
-                while (chunk := s.recv(MSG_LENGTH)):
-                    data += chunk
-            except TimeoutError:
-                error("peer", "send_recv", "Connection timedout")
-                return
-            except ConnectionResetError as e:
-                error("peer", "send_recv", str(e))
-                return
-
-
-            try:
-                msg_res = ResponseMsg()
-                msg_res.from_bencoding(data.decode())
-                msg_res.response_time = time.time() - t_start
-            except MsgError as e:
-                error("peer", "send_recv", str(e))
-                return
-            except BencDecodeError as e:
-                error("peer", "send_recv", str(e))
-                return
-
-            if msg_res.transaction_id != msg_req.transaction_id:
-                error("peer", "send_recv", f"communication error, transaction_id error: {msg_req.transaction_id} != {msg_res.transaction_id}")
-                return
-
-        return msg_res
-
-    def res_ping_callback(self, msg: PingMsg) -> ResponseMsg|ErrorMsg:
+    def res_ping_callback(self, msg: PingMsg, ip: str, port: int) -> ResponseMsg|ErrorMsg:
         """ Called by Server(), respond to incoming PING query message """
         # TODO: Check if we have to save the peer in the routing table
         # echo -n "d1:t2:xx1:y1:q1:q4:ping1:ad2:idd4:uuidi666e2:ip9:127.0.0.14:porti666eeee" | ncat localhost 12345
-        sender = Peer(**msg.sender_id)
-        origin = Peer(self._uuid, self._ip, self._port)
-        self._table.insert_peer(sender, origin)
-        return ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
+        sender = Peer(msg.sender_id, ip, port)
+        self._table.insert_peer(sender, self._uuid)
+        return ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid)
 
-    def res_find_node_callback(self, msg: FindNodeMsg) -> ResponseMsg|ErrorMsg:
+    def res_find_node_callback(self, msg: FindNodeMsg, ip: str, port: int) -> ResponseMsg|ErrorMsg:
         """ Called by Server(), respond to incoming FIND_NODE query message """
         # echo -n d1:t2:xx1:y1:q1:q9:find_node1:ad2:idd4:uuidi666e2:ip9:127.0.0.14:porti666ee6:targetd4:uuidi98766e2:ip9:127.0.0.14:porti98766eeee | ncat localhost 12345
-        sender = Peer(**msg.sender_id)
-        origin = Peer(self._uuid, self._ip, self._port)
-        self._table.insert_peer(sender, origin)
+        sender = Peer(msg.sender_id, ip, port)
+        self._table.insert_peer(sender, self._uuid)
 
         peers = self._table.get_closest_nodes(sender, msg.target_id)
         # TODO: write and read address={ip, port}
 
-        res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
+        res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid)
         #res.return_values = {"nodes" : [{"id":p.uuid, "address" : f"{p.ip}:{p.port}"} for p in peers]}
         res.return_values = {"nodes" : [p.__dict__ for p in peers]}
 
         print(res)
         return res
 
-    def res_store_callback(self, msg: StoreMsg) -> ResponseMsg|ErrorMsg:
+    def res_store_callback(self, msg: StoreMsg, ip: str, port: int) -> ResponseMsg|ErrorMsg:
         """ Called by Server(), respond to incoming STORE query message """
-        sender = Peer(**msg.sender_id)
-        origin = Peer(self._uuid, self._ip, self._port)
-        self._table.insert_peer(sender, origin)
+        sender = Peer(msg.sender_id, ip, port)
+        self._table.insert_peer(sender, self._uuid)
 
-    def res_find_key_callback(self, msg: FindKeyMsg) -> ResponseMsg|ErrorMsg:
+    def res_find_key_callback(self, msg: FindKeyMsg, ip: str, port: int) -> ResponseMsg|ErrorMsg:
         """ Called by Server(), respond to incoming FIND_KEY query message """
-        sender = Peer(**msg.sender_id)
-        origin = Peer(self._uuid, self._ip, self._port)
-        self._table.insert_peer(sender, origin)
+        sender = Peer(msg.sender_id, ip, port)
+        self._table.insert_peer(sender, self._uuid)
 
     def ping(self, uuid: int, ip: str, port: int):
         """ Ping peer and return respond time """
         info("peer", "ping", "sending ping")
-        msg_req = PingMsg(uuid=self._uuid, ip=self._ip, port=self._port)
-        if (msg_res := self._send_request(ip, port, msg_req)):
-            info("peer", "ping", f"response time: {msg_res.response_time}")
-            print(msg_res)
-            return msg_res.response_time
+        target = Peer(uuid, ip, port)
+        target.ping(self._uuid)
 
     def find_node(self, target_uuid: int):
-        """ Initiate a node lookup """
+        """ Initiate a recursive node lookup """
         # TODO: follow recursive algorythm from paper
         info("peer", "find_node", "sending find_node")
         origin = Peer(self._uuid, self._ip, self._port)
 
         for peer in self._table.get_closest_nodes(origin, target_uuid):
 
-            msg_req = FindNodeMsg(uuid=self._uuid, ip=self._ip, port=self._port)
+            msg_req = FindNodeMsg(uuid=self._uuid)
             msg_req.target_id = target_uuid
             print(msg_req)
 
-            if (msg_res := self._send_request(peer.ip, peer.port, msg_req)):
+            if (msg_res := send_request(peer.ip, peer.port, msg_req)):
                 info("peer", "find_node", f"response time: {msg_res.response_time}")
                 print(msg_res)
                 return msg_res
@@ -365,14 +366,12 @@ class Node(Server):
     def bootstrap(self, peers):
         """ Add bootstrap nodes to table and do a lookup for our own uuid in these new
             nodes to populate our and their routing table. """
-        origin = Peer(self._uuid, self._ip, self._port)
 
         for peer in peers:
             info("node", "bootstrap", str(peer))
-            print(peer.uuid, peer.ip, peer.port)
-            self._table.insert_peer(peer, origin)
+            self._table.insert_peer(peer, self._uuid)
 
-        self.find_node(origin.uuid)
+        self.find_node(self._uuid)
 
         print("end")
 

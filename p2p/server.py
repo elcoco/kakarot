@@ -93,7 +93,7 @@ class ConnThread(threading.Thread):
 
             # TODO: needs to handle errors
             # Runs appropriate callback and sends returned message back to requesting node
-            res_msg = self._callbacks[qtype](msg)
+            res_msg = self._callbacks[qtype](msg, self._ip, self._port)
             print(res_msg)
             self.send(res_msg.to_bencoding())
 

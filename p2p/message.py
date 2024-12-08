@@ -31,15 +31,6 @@ class MsgKey(StrEnum):
     TARGET_ID      = "target" # v is specified in IdKey
 
 
-# Used in query message as sender identifier
-# Used in find_node query to list found peers and target peer
-# Used in response message as sender identifier
-class IdKey(StrEnum):
-    UUID = "uuid"
-    IP   = "ip"
-    PORT = "port"
-
-
 class MsgType(StrEnum):
     QUERY    = "q"
     RESPONSE = "r"
@@ -108,32 +99,25 @@ class MsgBaseClass(Bencoder):
 
 
 class ResponseMsg(MsgBaseClass):
-    def __init__(self, *args, uuid: Optional[int]=None, ip: Optional[str]=None, port: Optional[int]=None, **kwargs):
+    def __init__(self, *args, uuid: Optional[int]=None, **kwargs):
         MsgBaseClass.__init__(self, *args, **kwargs)
 
-        # sender info
-        self.uuid = uuid
-        self.ip = ip
-        self.port = port
-        print(uuid, ip, port)
-
-        if all([uuid, ip, port]):
-            self.set_sender_id(uuid, ip, port)
+        if uuid:
+            self.sender_id = uuid
 
         # we can set time between request and response
         self._response_time: int = -1
         self.msg_type = MsgType.RESPONSE
 
     @property
-    def id(self):
-        return self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID]
+    def sender_id(self):
+        return self._data[MsgKey.RESPONSE_ARGS][MsgKey.SENDER_ID]
 
-    def set_sender_id(self, uuid: int, ip: str, port: int):
+    @sender_id.setter
+    def sender_id(self, id: int):
         if not MsgKey.RESPONSE_ARGS in self._data.keys():
             self._data[MsgKey.RESPONSE_ARGS] = {}
-        self._data[MsgKey.RESPONSE_ARGS][MsgKey.SENDER_ID] = { IdKey.UUID: uuid,
-                                                               IdKey.IP:   ip,
-                                                               IdKey.PORT: port }
+        self._data[MsgKey.RESPONSE_ARGS][MsgKey.SENDER_ID] = id
 
     @property
     def response_time(self):
@@ -165,16 +149,11 @@ class ResponseMsg(MsgBaseClass):
 
 
 class QueryMsgBaseClass(MsgBaseClass):
-    def __init__(self, *args, uuid: Optional[int]=None, ip: Optional[str]=None, port: Optional[int]=None, **kwargs):
+    def __init__(self, *args, uuid: Optional[int]=None, **kwargs):
         MsgBaseClass.__init__(self, *args, **kwargs)
 
-        # sender info
-        self.uuid = uuid
-        self.ip = ip
-        self.port = port
-
-        if all([uuid, ip, port]):
-            self.set_sender_id(uuid, ip, port)
+        if uuid:
+            self.sender_id = uuid
 
         self.msg_type = MsgType.QUERY
 
@@ -190,12 +169,11 @@ class QueryMsgBaseClass(MsgBaseClass):
     def sender_id(self):
         return self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID]
 
-    def set_sender_id(self, uuid: int, ip: str, port: int):
+    @sender_id.setter
+    def sender_id(self, id: int):
         if not MsgKey.QUERY_ARGS in self._data.keys():
             self._data[MsgKey.QUERY_ARGS] = {}
-        self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID] = { IdKey.UUID: uuid,
-                                                IdKey.IP:   ip,
-                                                IdKey.PORT: port }
+        self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID] = id
 
     def validate(self):
         if not self._data.get(MsgKey.TRANSACTION_ID):
@@ -210,12 +188,6 @@ class QueryMsgBaseClass(MsgBaseClass):
             raise MsgError(f"Failed to validate query message, message has no arguments")
         if not self._data[MsgKey.QUERY_ARGS].get(MsgKey.SENDER_ID):
             raise MsgError(f"Failed to validate query message, id dictionary not found in arguments")
-        if not self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID].get(IdKey.UUID):
-            raise MsgError(f"Failed to validate query message, missing uuid in id")
-        if not self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID].get(IdKey.IP):
-            raise MsgError(f"Failed to validate query message, missing ip in id")
-        if not self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID].get(IdKey.PORT):
-            raise MsgError(f"Failed to validate query message, missing port in id")
 
         match self._data[MsgKey.QUERY_TYPE]:
             case QueryType.PING:

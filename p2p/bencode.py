@@ -120,8 +120,11 @@ class Bencoder():
 
     def loads(self, data: str):
         """ Parse bencoded string into python native data structures """
+        print(f"loads: >{data}<")
         if not isinstance(data, str):
             raise BencDecodeError("Failed to decode, data is not a string")
+        if not data:
+            raise BencDecodeError("Failed to decode, no data")
         parsed, _ = self._parse(data)
         return parsed
 
