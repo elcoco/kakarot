@@ -55,7 +55,7 @@ def get_arg(args, key: str, default: Optional[str]=None):
 
 def parse_args(state):
     default_port = 1024
-    default_bucket_size = 5
+    default_bucket_size = 20
     default_keyspace = 16
     default_alpha = 3
 

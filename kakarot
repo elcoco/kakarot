@@ -66,7 +66,6 @@ class PeerThread(threading.Thread):
         self._node.run()
         self._stopped = True
         t_delta = round(time.time()-t_start,1)
-        info("peer_thread", str(self._uuid), f"Finished execution in {t_delta} seconds")
 
 
 class ServerThreadManager():
