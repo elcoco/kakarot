@@ -64,7 +64,7 @@ def parse_args(state):
 
     subparsers = parser.add_subparsers(dest="command")
 
-    test = subparsers.add_parser("test", help="test")
+    test = subparsers.add_parser("test", help="run a bunch of nodes so we can run tests")
     test.add_argument('-p', '--peers',  help='amount of peers', metavar="AMOUNT", type=int, required=True)
     test.add_argument('-k', '--keyspace',  help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
     test.add_argument('-b', '--bucket-size',  help='amount of peers per bucket', metavar="SIZE", type=int, default=default_bucket_size)
@@ -99,12 +99,35 @@ def parse_args(state):
     find_node.add_argument('-u', '--uuid',        help='uuid', metavar="UUID", type=int)
     find_node.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str)
 
+    store = subparsers.add_parser("store", help="store a key value pair")
+    store.add_argument('-a', '--alpha',       help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=default_alpha)
+    store.add_argument('-b', '--bucket-size', help='amount of peers per bucket', metavar="SIZE", type=int, default=default_bucket_size)
+    store.add_argument('-D', '--debug',       help='enable debugging', action='store_true')
+    store.add_argument('-k', '--keyspace',    help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
+    store.add_argument('-p', '--port',        help='listen port', metavar="PORT", type=int, default=default_port)
+    store.add_argument('-u', '--uuid',        help='uuid', metavar="UUID", type=int)
+    store.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str)
+    store.add_argument('-K', '--key',         help='key of data', metavar="KEY", type=str, required=True)
+    store.add_argument('-V', '--value',       help='value of data', metavar="VALUE", type=str, required=True)
+
+    find_key = subparsers.add_parser("find_key", help="get value by key")
+    find_key.add_argument('-a', '--alpha',       help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=default_alpha)
+    find_key.add_argument('-b', '--bucket-size', help='amount of peers per bucket', metavar="SIZE", type=int, default=default_bucket_size)
+    find_key.add_argument('-D', '--debug',       help='enable debugging', action='store_true')
+    find_key.add_argument('-k', '--keyspace',    help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
+    find_key.add_argument('-p', '--port',        help='listen port', metavar="PORT", type=int, default=default_port)
+    find_key.add_argument('-u', '--uuid',        help='uuid', metavar="UUID", type=int)
+    find_key.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str)
+    find_key.add_argument('-K', '--key',         help='key of data', metavar="KEY", type=str, required=True)
+
     args = parser.parse_args()
     
     state.do_test = False
     state.do_run = False
     state.do_ping = False
     state.do_find_node = False
+    state.do_store = False
+    state.do_find_key = False
 
     if args.command == "test":
         state.do_test     = True
@@ -138,6 +161,25 @@ def parse_args(state):
         state.alpha        = args.alpha
         state.target       = args.target
         state.bootstrap    = args.bootstrap
+    elif args.command == "store":
+        state.do_store     = True
+        state.port         = args.port
+        state.keyspace     = args.keyspace
+        state.bucket_size  = args.bucket_size
+        state.uuid         = args.uuid
+        state.alpha        = args.alpha
+        state.bootstrap    = args.bootstrap
+        state.key          = args.key
+        state.value        = args.value
+    elif args.command == "find_key":
+        state.do_store     = True
+        state.port         = args.port
+        state.keyspace     = args.keyspace
+        state.bucket_size  = args.bucket_size
+        state.uuid         = args.uuid
+        state.alpha        = args.alpha
+        state.bootstrap    = args.bootstrap
+        state.key          = args.key
     else:
         parser.print_help()
         sys.exit()

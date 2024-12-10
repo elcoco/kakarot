@@ -182,11 +182,35 @@ class Kakarot():
                 return
             node.bootstrap([peer])
 
-        node.find_node(state.target)
+        node.req_find_node(state.target)
 
         node.stop()
 
         print("done")
+
+    def do_find_key(self, state):
+        node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node.start()
+        time.sleep(1)
+        if state.bootstrap:
+            if (peer := self._parse_id(state.bootstrap)) == None:
+                return
+            node.bootstrap([peer])
+            node.req_find_value(state.key)
+            # do stuff
+        node.stop()
+
+    def do_store(self, state):
+        node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node.start()
+        time.sleep(1)
+        if state.bootstrap:
+            if (peer := self._parse_id(state.bootstrap)) == None:
+                return
+            node.bootstrap([peer])
+            node.req_store(state.key, state.value)
+            # do stuff
+        node.stop()
 
     def run(self, state):
         if state.do_test:
@@ -203,6 +227,10 @@ class Kakarot():
             self.do_ping(state)
         elif state.do_find_node:
             self.do_find_node(state)
+        elif state.do_find_key:
+            self.do_find_key(state)
+        elif state.do_store:
+            self.do_store(state)
 
 
 

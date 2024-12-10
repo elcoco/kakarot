@@ -12,6 +12,8 @@ from p2p.server import Server
 from p2p.bencode import BencDecodeError
 from p2p.message import PingMsg, StoreMsg, FindNodeMsg, FindKeyMsg, ResponseMsg, ErrorMsg
 from p2p.message import MsgError
+from p2p.message import MsgKey
+from p2p.store import Store
 from core.utils import debug, info, error
 
 MSG_LENGTH = 1024
@@ -85,7 +87,7 @@ class Peer():
     uuid: int
     ip: str
     port: int
-    contacted: bool = False
+    parent: Optional["Peer"] = None
 
     def __repr__(self):
         #return f"{self.uuid:5} @ {self.ip}:{self.port:5}"
@@ -95,6 +97,16 @@ class Peer():
         return { "uuid" : self.uuid,
                  "ip" : self.ip,
                  "port" : self.port }
+
+    def trace_back(self):
+        """ Trace back peer to get a path to origin. This is used for debuggin only """
+        trace = []
+        peer = self
+        while peer:
+            trace.append(f"{peer.uuid:016b}")
+            peer = peer.parent
+        #print(" > ".join(trace))
+        return trace
 
     def get_distance(self, origin_uuid):
         return self.uuid ^ origin_uuid
@@ -120,68 +132,54 @@ class Peer():
 
     #def ping(self, origin_uuid: int):
     def ping(self, origin: "Peer"):
-        #msg_req = PingMsg(uuid=origin_uuid)
         msg_req = PingMsg(uuid=origin.uuid, ip=origin.ip, port=origin.port)
-        #print(origin_uuid, msg_req)
         if (msg_res := send_request(self.ip, self.port, msg_req)):
-            info("peer", "ping", f"response time: {msg_res.response_time}")
-            print(msg_res)
+            #info("peer", "ping", f"response time: {msg_res.response_time}")
             return msg_res.response_time
 
 
 class ShortList():
     def __init__(self, target_uuid: int, limit: int):
         """
+        source: https://www.scs.stanford.edu/17au-cs244b/labs/projects/kaplan-nelson_ma_rachleff.pdf
+        1) Select α contacts from the closest non-empty k-bucket to the key being
+           searched for. If there are fewer than α contacts in that bucket,
+           Kademlia will select from buckets increasingly farther away from the key.
+           α represents the number of parallel requests.
+        2) The initiator node sends asynchronous FIND_NODE (or FIND_VALUE RPCs in
+           parallel to each of the α contacts.
+        3) Upon receiving each RPC response, the initiator node adds the received
+           list of k-closest nodes to a sorted set, sorting the nodes using the XOR
+           distance between a node’s ID and the key.
+        4) The initiator repeatedly selects the first α contacts from the list that
+           have not been contacted yet. FIND_NODE RPCs are sent to these contacts.
+           At most α requests are in parallel at once, and the recursive procedure
+           can begin before all requests from one round have returned. The α requests
+           will always be to the closest nodes the initiator has heard of.
+        5) The search terminates when the k closest nodes to the key have been queried
+           and responded, or when all the known nodes in the network have been queried.
+           In the case of sending FIND_VALUE RPCs, the search terminates as soon as the
+           initiator node receives a response that the value has been found, meaning the
+           RPC response payload contains a list of peers whom the initiator node can
+           contact for the data. (We were unable to implement removing a node from
+           consideration if it does not respond. This is in our future steps).
+        6) The list of K-closest nodes is passed to a callback; for put’s, Kademlia sends
+           the nodes in the list STORE RPCs. For get’s, the list of nodes is passed to a
+           callback which calls the user-specified callback with the list (if found) or
+           an empty list if the value was not found.
+
         source: https://xlattice.sourceforge.net/components/protocol/kademlia/specs.html#FIND_VALUE
-
-        The search begins by selecting alpha contacts from the non-empty k-bucket
-        closest to the bucket appropriate to the key being searched on. If there
-        are fewer than alpha contacts in that bucket, contacts are selected from
-        other buckets. The contact closest to the target key, closestNode, is noted.
-
-        The first alpha contacts selected are used to create a shortlist for the search.
-        The node then sends parallel, asynchronous FIND_* RPCs to the alpha contacts in
-        the shortlist. Each contact, if it is live, should normally return k triples.
-        If any of the alpha contacts fails to reply, it is removed from the shortlist,
-        at least temporarily.
-
-        The node then fills the shortlist with contacts from the replies received.
-        These are those closest to the target. From the shortlist it selects another
-        alpha contacts. The only condition for this selection is that they have not
-        already been contacted. Once again a FIND_* RPC is sent to each in parallel.
-        Each such parallel search updates closestNode, the closest node seen so far.
-
-        The sequence of parallel searches is continued until either no node in the
-        sets returned is closer than the closest node already seen or the initiating
-        node has accumulated k probed and known to be active contacts.
-
-        If a cycle doesn't find a closer node, if closestNode is unchanged, then the
-        initiating node sends a FIND_* RPC to each of the k closest nodes that it has
-        not already queried.
-        At the end of this process, the node will have accumulated a set of k active
-        contacts or (if the RPC was FIND_VALUE) may have found a data value.
-        Either a set of triples or the value is returned to the caller.
-
-        NOTE:
-        The original algorithm description is not clear in detail. However, it appears
-        that the initiating node maintains a shortlist of k closest nodes. During each
-        iteration, alpha of these are selected for probing and marked accordingly. If a
-        probe succeeds, that shortlisted node is marked as active. If there is no reply
-        after an unspecified period of time, the node is dropped from the shortlist.
-        As each set of replies comes back, it is used to improve the shortlist: closer
-        nodes in the reply replace more distant (unprobed?) nodes in the shortlist.
-        Iteration continues until k nodes have been successfully probed or there has been
-        no improvement.
-
         """
         self._list = []
-        self.closest_peer: Optional[Peer] = None
         self._target_uuid = target_uuid
 
-        # the max size of list
+        # the max size of list, probably K
         self._limit = limit
 
+        # Contacted peers
         self._contacted = []
+
+        # Peers that did not respond end up here
         self._rejected = []
 
     def __repr__(self):
@@ -200,7 +198,10 @@ class ShortList():
 
     def set_rejected(self, peer: Peer):
         """ Peer did not respond, let's put it on a list so we can contact it again later if needed """
-        self._list.remove(peer)
+        try:
+            self._list.remove(peer)
+        except ValueError:
+            pass
         self._rejected.append(peer)
 
     def is_in(self, src_list: list[Peer], peer: Peer):
@@ -214,50 +215,25 @@ class ShortList():
         return len(self._list)
 
     def add(self, peer: Peer):
-        """ Add peer to list, update closest node if it is closer than any other node already seen """
-        # NOTE: never put origin node in peerlist
-        # NOTE: never put double nodes in list
-        if p := self.is_in(self._list + self._contacted + self._rejected, peer):
-            #error("shortlist", "add", f"not adding peer: {peer}")
+        if self.is_in(self._list + self._contacted + self._rejected, peer):
             return
-        else:
-            info("shortlist", "add", f"adding peer: {peer}")
-
         self._list.append(peer)
-
-        if self.closest_peer == None:
-            self.closest_peer = peer
-        elif peer.get_distance(self._target_uuid) < self.closest_peer.get_distance(self._target_uuid):
-            self.closest_peer = peer
 
     def is_complete(self):
         return len(self._contacted) >= self._limit
 
     def get_results(self):
-        """ Return a list of K peers (or less if we couldn't find more) sorted
-            by closeness """
+        """ Return a list of K peers (or less if we couldn't find more) sorted by closeness """
         return sorted(self._contacted, key=lambda x: x.get_distance(self._target_uuid))[:self._limit]
 
     def get_peers(self, limit: int):
         """ Return the next set of peers from the shortlist """
-        #return [p for p in self._list if p not in self._contacted][:limit]
-        #return self._list[:limit]
         return sorted(self._list, key=lambda x: x.get_distance(self._target_uuid))[:limit]
 
-
-class Lock():
-    _is_locked = False
-
-    def __enter__(self):
-        #info("lock", "enter", "waiting for lock")
-        while Lock._is_locked:
-            time.sleep(0.01)
-        Lock._is_locked = True
-        #info("lock", "enter", "aquired lock")
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        Lock._is_locked = False
-        #info("lock", "enter", "released lock")
+    def print_results(self):
+        print(f"FIND_PEER RESULTS ({self._target_uuid:016b}, {self._target_uuid})")
+        for i,peer in enumerate(self.get_results()):
+            print(f"{i:2} {" > ".join(peer.trace_back())}")
 
 
 class RouteTable():
@@ -402,7 +378,7 @@ class RouteTable():
 
 
 class Node(Server):
-    def __init__(self, ip: str, port: int, key_size: int, bucket_size: int, alpha: int, uuid: Optional[int]=None) -> None:
+    def __init__(self, ip: str, port: int, keyspace: int, bucket_size: int, alpha: int, uuid: Optional[int]=None) -> None:
 
         # Specify the callbacks that need to run to respond to incoming query messages
         callbacks = { "ping":      self.res_ping_callback,
@@ -413,7 +389,7 @@ class Node(Server):
         Server.__init__(self, ip, port, callbacks)
 
         # Size of network uuid/keys in bits
-        self._key_size = key_size
+        self._keyspace = keyspace
 
         # Amount of peers stored per bucket (K)
         self._bucket_size = bucket_size
@@ -424,7 +400,7 @@ class Node(Server):
         if uuid == None:
             self._uuid = self._create_uuid()
         else:
-            if math.log2(uuid) > self._key_size:
+            if math.log2(uuid) > self._keyspace:
                 raise ValueError("node", "init", f"uuid is not in keyspace")
 
             self._uuid = uuid
@@ -433,13 +409,14 @@ class Node(Server):
         # Lookup max <alpha> nodes at a time
         self._alpha = alpha
 
-        self._table = RouteTable(key_size, bucket_size, self._uuid)
+        self._table = RouteTable(keyspace, bucket_size, self._uuid)
+        self._store = Store(self._keyspace)
 
     def __repr__(self):
         return f"NODE: {self._uuid}@{self._ip}:{self._port}"
 
     def _create_uuid(self):
-        return random.randrange(0, (2**self._key_size)-1)
+        return random.randrange(0, (2**self._keyspace)-1)
 
     def res_ping_callback(self, msg: PingMsg) -> ResponseMsg|ErrorMsg:
         """ Called by Server(), respond to incoming PING query message """
@@ -461,24 +438,42 @@ class Node(Server):
         self._table.insert_peer(sender, origin)
         # TODO: write and read address={ip, port}
 
-        for i,p in enumerate(peers):
-            print(f"[{i}] find_node_cb returning: {p}")
+        #for i,p in enumerate(peers):
+        #    print(f"[{i}] find_node_cb returning: {p}")
 
         res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
-        res.return_values = {"nodes" : [p.to_dict() for p in peers]}
+        res.return_values = {MsgKey.NODES : [p.to_dict() for p in peers]}
         return res
 
     def res_store_callback(self, msg: StoreMsg) -> ResponseMsg|ErrorMsg:
         """ Called by Server(), respond to incoming STORE query message """
         sender = Peer(msg.sender_uuid, msg.sender_ip, msg.sender_port)
         origin = Peer(self._uuid, self._ip, self._port)
+        info("node", "store_cb", f"storing: {msg.key} : {msg.value}")
+        self._store.put_by_uuid(msg.key, msg.value)
         self._table.insert_peer(sender, origin)
+        print(self._store)
+
+        # TODO: Respond with a message echoing the key, value
+        res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
+        return res
 
     def res_find_key_callback(self, msg: FindKeyMsg) -> ResponseMsg|ErrorMsg:
-        """ Called by Server(), respond to incoming FIND_KEY query message """
+        """ Called by Server(), respond to incoming FIND_KEY query message.
+            If key is found on this node, return key. Otherwise return the K closest
+            nodes to key that we know of """
         sender = Peer(msg.sender_uuid, msg.sender_ip, msg.sender_port)
         origin = Peer(self._uuid, self._ip, self._port)
         self._table.insert_peer(sender, origin)
+        res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
+
+        if value := self._store.get_by_uuid(msg.key):
+            res.return_values = { MsgKey.VALUE : value }
+            return res
+        else:
+            peers = self._table.get_closest_nodes(sender, msg.key)
+            res.return_values = {MsgKey.NODES : [p.to_dict() for p in peers]}
+            return res
 
     def ping(self, uuid: int, ip: str, port: int):
         """ Ping peer and return respond time """
@@ -487,57 +482,74 @@ class Node(Server):
         target = Peer(uuid, ip, port)
         target.ping(origin)
 
-    def find_node(self, target_uuid: int):
-        """ Initiate a recursive node lookup """
-        info("peer", "find_node", f"sending find_node: {target_uuid}")
-
-        # get the <alpha> closest peers we know of
+    def req_find_node(self, target_uuid: int):
+        """ Initiate an iterative node lookup """
+        info("peer", "req_find_node", f"sending find_node: {target_uuid}")
         origin = Peer(self._uuid, self._ip, self._port)
-        boot_peers = self._table.get_closest_nodes(origin, target_uuid, amount=self._alpha)
         shortlist = ShortList(target_uuid, self._bucket_size)
 
-        for peer in boot_peers:
+        # Add ourself to rejected nodes so we don't add ourselves to the shortlist
+        shortlist.set_rejected(origin)
+
+        # Add initial <alpaha> closest peers
+        for peer in self._table.get_closest_nodes(origin, target_uuid, amount=self._alpha):
             shortlist.add(peer)
 
-        while not shortlist.is_complete():
-
+        while not shortlist.is_complete() and shortlist.has_uncontacted_peers():
             peers = shortlist.get_peers(self._alpha)
 
             for peer in peers:
-                if (origin.uuid, origin.ip, origin.port) == (peer.uuid, peer.ip, peer.port):
-                    #error("node", "find_node", f"not adding self")
-                    shortlist.set_rejected(peer)
-                    continue
+                assert (origin.uuid, origin.ip, origin.port) != (peer.uuid, peer.ip, peer.port), "Don't add origin to shortlist"
 
                 msg_req = FindNodeMsg(uuid=self._uuid, ip=self._ip, port=self._port)
                 msg_req.target_uuid = target_uuid
 
                 if (msg_res := send_request(peer.ip, peer.port, msg_req)):
+                    assert type(msg_res) != MsgError, f"Find node received an error from: {peer}"
                     self._table.insert_peer(peer, origin)
                     shortlist.set_contacted(peer)
 
                     # add received peers to new_peers if not already contacted
-                    new_peers = [Peer(x["uuid"], x["ip"], x["port"]) for x in msg_res.return_values["nodes"]]
+                    new_peers = [Peer(x["uuid"], x["ip"], x["port"]) for x in msg_res.return_values[MsgKey.NODES]]
                     for p in new_peers:
                         shortlist.add(p)
+                        p.parent = peer
 
                 else:
                     # Request failed, remove peer from our routing table (if it's there)
                     self._table.remove_peer(peer, self._uuid)
                     shortlist.set_rejected(peer)
 
-            if not shortlist.has_uncontacted_peers():
-                info("node", "find_node", f"all known peers have been contacted")
-                break
-
-        else:
-            info("node", "find_node", f"found max amount of peers")
-
-        print(f"FOUND PEER RESULTS ({target_uuid:016b})")
-        for i,peer in enumerate(shortlist.get_results()):
-            print(f"{i:2} {peer}")
-
+        shortlist.print_results()
         return shortlist.get_results()
+
+    def req_find_value(self, k: str):
+        """ Do an iterative search for nodes close to <k> to find k:v pair.
+            Similar to req_find_node() but if a key is found, stop search immediately.
+            If key is found, store key at closest node to <K> that doesn't have the key stored. """
+
+
+    def req_store(self, k: str, v: str):
+        origin = Peer(self._uuid, self._ip, self._port)
+
+        target_uuid = self._store.get_hash(k)
+        msg_req = StoreMsg(uuid=self._uuid, ip=self._ip, port=self._port)
+        msg_req.key = target_uuid
+        msg_req.value = v
+
+        print(f"Finding key @ {target_uuid:016b}")
+        print(msg_req)
+        print(msg_req.to_bencoding())
+
+        for peer in self.req_find_node(target_uuid):
+            if (msg_res := send_request(peer.ip, peer.port, msg_req)):
+                assert type(msg_res) != MsgError, f"store received an error from: {peer}"
+                info("node", "req_store", f"stored {k}:{v} @ {peer}")
+            else:
+                self._table.remove_peer(peer, self._uuid)
+                error("node", "req_store", f"peer didn't respond: {peer}")
+            print(msg_res)
+
 
     def bootstrap(self, peers):
         """ Add bootstrap nodes to table and do a lookup for our own uuid in these new
@@ -551,7 +563,7 @@ class Node(Server):
                 continue
             self._table.insert_peer(peer, origin)
 
-        self.find_node(self._uuid)
+        self.req_find_node(self._uuid)
 
 
         print("end")

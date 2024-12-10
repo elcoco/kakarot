@@ -27,8 +27,15 @@ class MsgKey(StrEnum):
     QUERY_ARGS     = "a"      # query messages have required arguments with sender id
     RESPONSE_ARGS  = "r"      # response messages have required arguments with sender id
     ERROR_ARGS     = "e"      # error messages have required args with code and message
-    SENDER_ID      = "id"     # v is specified in IdKey
+    SENDER_ID      = "id"     # dict where sender id information is stored
+    SENDER_UUID    = "uuid"
+    SENDER_IP      = "ip"
+    SENDER_PORT    = "port"
     TARGET_UUID    = "target" # v is specified in IdKey
+    DATA           = "data"   # dict in args where to specify key, value for STORE and FIND_KEY
+    KEY            = "k"      # key for STORE and FIND_KEY
+    VALUE          = "v"      # value for STORE and FIND_KEY
+    NODES          = "nodes"  # key for returning nodes in response
 
 
 class MsgType(StrEnum):
@@ -102,6 +109,8 @@ class ResponseMsg(MsgBaseClass):
     def __init__(self, *args, uuid: Optional[int]=None, ip: Optional[str]=None, port: Optional[int]=None, **kwargs):
         MsgBaseClass.__init__(self, *args, **kwargs)
 
+        self._data[MsgKey.RESPONSE_ARGS] = {}
+
         if all([uuid, ip, port]):
             self.set_sender_id(uuid, ip, port)
 
@@ -111,32 +120,24 @@ class ResponseMsg(MsgBaseClass):
 
     @property
     def sender_uuid(self):
-        return self._data[MsgKey.RESPONSE_ARGS][MsgKey.SENDER_ID]["uuid"]
+        return self._data[MsgKey.RESPONSE_ARGS][MsgKey.SENDER_ID][MsgKey.SENDER_UUID]
 
     @property
     def sender_ip(self):
-        return self._data[MsgKey.RESPONSE_ARGS][MsgKey.SENDER_ID]["ip"]
+        return self._data[MsgKey.RESPONSE_ARGS][MsgKey.SENDER_ID][MsgKey.SENDER_IP]
 
     @property
     def sender_port(self):
-        return self._data[MsgKey.RESPONSE_ARGS][MsgKey.SENDER_ID]["port"]
+        return self._data[MsgKey.RESPONSE_ARGS][MsgKey.SENDER_ID][MsgKey.SENDER_PORT]
 
     @property
     def sender_id(self):
         return self._data[MsgKey.RESPONSE_ARGS][MsgKey.SENDER_ID]
 
-    #@sender_id.setter
-    #def sender_id(self, id: int):
-    #    if not MsgKey.RESPONSE_ARGS in self._data.keys():
-    #        self._data[MsgKey.RESPONSE_ARGS] = {}
-    #    self._data[MsgKey.RESPONSE_ARGS][MsgKey.SENDER_ID] = id
-
     def set_sender_id(self, uuid: int, ip: str, port: int):
-        if not MsgKey.RESPONSE_ARGS in self._data.keys():
-            self._data[MsgKey.RESPONSE_ARGS] = {}
-        self._data[MsgKey.RESPONSE_ARGS][MsgKey.SENDER_ID] = { "uuid" : uuid,
-                                                               "ip"   : ip,
-                                                               "port" : port }
+        self._data[MsgKey.RESPONSE_ARGS][MsgKey.SENDER_ID] = { MsgKey.SENDER_UUID : uuid,
+                                                               MsgKey.SENDER_IP   : ip,
+                                                               MsgKey.SENDER_PORT : port }
 
     @property
     def response_time(self):
@@ -145,6 +146,14 @@ class ResponseMsg(MsgBaseClass):
     @response_time.setter
     def response_time(self, exec_time: int):
         self._exec_time = exec_time
+
+    @property
+    def value(self):
+        return self._data[MsgKey.RESPONSE_ARGS].get(MsgKey.VALUE)
+
+    @value.setter
+    def value(self, v: str):
+        self._data[MsgKey.RESPONSE_ARGS][MsgKey.VALUE] = v
 
     @property
     def return_values(self):
@@ -171,6 +180,8 @@ class QueryMsgBaseClass(MsgBaseClass):
     def __init__(self, *args, uuid: Optional[int]=None, ip: Optional[str]=None, port: Optional[int]=None, **kwargs):
         MsgBaseClass.__init__(self, *args, **kwargs)
 
+        self._data[MsgKey.QUERY_ARGS] = {}
+
         if all([uuid, ip, port]):
             self.set_sender_id(uuid, ip, port)
 
@@ -178,15 +189,15 @@ class QueryMsgBaseClass(MsgBaseClass):
 
     @property
     def sender_uuid(self):
-        return self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID]["uuid"]
+        return self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID][MsgKey.SENDER_UUID]
 
     @property
     def sender_ip(self):
-        return self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID]["ip"]
+        return self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID][MsgKey.SENDER_IP]
 
     @property
     def sender_port(self):
-        return self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID]["port"]
+        return self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID][MsgKey.SENDER_PORT]
 
     @property
     def query_type(self):
@@ -201,11 +212,9 @@ class QueryMsgBaseClass(MsgBaseClass):
         return self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID]
 
     def set_sender_id(self, uuid: int, ip: str, port: int):
-        if not MsgKey.QUERY_ARGS in self._data.keys():
-            self._data[MsgKey.QUERY_ARGS] = {}
-        self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID] = { "uuid" : uuid,
-                                                            "ip"   : ip,
-                                                            "port" : port }
+        self._data[MsgKey.QUERY_ARGS][MsgKey.SENDER_ID] = { MsgKey.SENDER_UUID : uuid,
+                                                            MsgKey.SENDER_IP   : ip,
+                                                            MsgKey.SENDER_PORT : port }
 
     def validate(self):
         if not self._data.get(MsgKey.TRANSACTION_ID):
@@ -226,14 +235,25 @@ class QueryMsgBaseClass(MsgBaseClass):
                 # ping has no extra arguments
                 ...
             case QueryType.STORE:
-                ...
+                if not self._data[MsgKey.QUERY_ARGS].get(MsgKey.KEY):
+                    raise MsgError(f"Failed to validate store message, key not found in arguments")
+                if not self._data[MsgKey.QUERY_ARGS].get(MsgKey.VALUE):
+                    raise MsgError(f"Failed to validate store message, value not found in arguments")
+                if not type(self._data[MsgKey.QUERY_ARGS].get(MsgKey.KEY)) == int:
+                    raise MsgError(f"Failed to validate store message, key must be an integer")
+                if not type(self._data[MsgKey.QUERY_ARGS].get(MsgKey.VALUE)) == str:
+                    raise MsgError(f"Failed to validate store message, key must be a string")
+
             case QueryType.FIND_NODE:
                 if not self._data[MsgKey.QUERY_ARGS].get(MsgKey.TARGET_UUID):
                     raise MsgError(f"Failed to validate find_node query message, target node not found in arguments")
                 if type(self._data[MsgKey.QUERY_ARGS].get(MsgKey.TARGET_UUID)) != int:
                     raise MsgError(f"Failed to validate find_node query message, target node must be integer")
             case QueryType.FIND_KEY:
-                ...
+                if not self._data[MsgKey.QUERY_ARGS].get(MsgKey.KEY):
+                    raise MsgError(f"Failed to validate store message, key not found in arguments")
+                if not type(self._data[MsgKey.QUERY_ARGS].get(MsgKey.KEY)) == int:
+                    raise MsgError(f"Failed to validate store message, key must be an integer")
             case _:
                 raise MsgError(f"Failed to validate message, unknown query type: {self._data[MsgKey.QUERY_TYPE]}")
 
@@ -245,9 +265,30 @@ class PingMsg(QueryMsgBaseClass):
 
 
 class StoreMsg(QueryMsgBaseClass):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, key: Optional[int]=None, value: Optional[str]=None, **kwargs):
         QueryMsgBaseClass.__init__(self, *args, **kwargs)
         self.query_type = QueryType.STORE
+
+        if key:
+            self.key = key
+        if value:
+            self.value = value
+
+    @property
+    def key(self):
+        return self._data[MsgKey.QUERY_ARGS][MsgKey.KEY]
+
+    @key.setter
+    def key(self, k: int):
+        self._data[MsgKey.QUERY_ARGS][MsgKey.KEY] = k
+
+    @property
+    def value(self):
+        return self._data[MsgKey.QUERY_ARGS][MsgKey.VALUE]
+
+    @value.setter
+    def value(self, v: str):
+        self._data[MsgKey.QUERY_ARGS][MsgKey.VALUE] = v
 
 
 class FindNodeMsg(QueryMsgBaseClass):
@@ -265,9 +306,20 @@ class FindNodeMsg(QueryMsgBaseClass):
 
 
 class FindKeyMsg(QueryMsgBaseClass):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, key: Optional[int]=None, **kwargs):
         QueryMsgBaseClass.__init__(self, *args, **kwargs)
         self.query_type = QueryType.FIND_KEY
+
+        if key:
+            self.key = key
+
+    @property
+    def key(self):
+        return self._data[MsgKey.QUERY_ARGS][MsgKey.KEY]
+
+    @key.setter
+    def key(self, k: int):
+        self._data[MsgKey.QUERY_ARGS][MsgKey.KEY] = k
 
 
 class ErrorMsg(MsgBaseClass):
