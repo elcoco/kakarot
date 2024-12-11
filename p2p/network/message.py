@@ -6,7 +6,7 @@ import string
 import json
 
 from core.utils import debug, info, error
-from p2p.bencode import Bencoder
+from p2p.network.bencode import Bencoder
 
 
 class MsgError(Exception): pass
@@ -305,7 +305,7 @@ class FindNodeMsg(QueryMsgBaseClass):
         self._data[MsgKey.QUERY_ARGS][MsgKey.TARGET_UUID] = uuid
 
 
-class FindKeyMsg(QueryMsgBaseClass):
+class FindValueMsg(QueryMsgBaseClass):
     def __init__(self, *args, key: Optional[int]=None, **kwargs):
         QueryMsgBaseClass.__init__(self, *args, **kwargs)
         self.query_type = QueryType.FIND_KEY

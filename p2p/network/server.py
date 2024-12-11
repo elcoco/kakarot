@@ -4,12 +4,12 @@ import select
 import json
 from typing import Callable, Optional, Any
 
-from p2p.bencode import Bencoder, BencDecodeError
 from core.utils import debug, info, error
 
-from p2p.message import MsgKey, ErrCode, MsgType, QueryType
-from p2p.message import PingMsg, StoreMsg, FindNodeMsg, FindKeyMsg, ResponseMsg, ErrorMsg
-from p2p.message import MsgError
+from p2p.network.bencode import Bencoder, BencDecodeError
+from p2p.network.message import FindValueMsg, MsgKey, ErrCode, MsgType, QueryType
+from p2p.network.message import PingMsg, StoreMsg, FindNodeMsg, FindValueMsg, ResponseMsg, ErrorMsg
+from p2p.network.message import MsgError
 
 
 class ConnThread(threading.Thread):
@@ -39,7 +39,7 @@ class ConnThread(threading.Thread):
             All message types that are not query messages are considered errors """
 
         with self._conn:
-            info("conn_thread", str(self), f"accepted connection from: {self._ip}:{self._port}")
+            #info("conn_thread", str(self), f"accepted connection from: {self._ip}:{self._port}")
 
             try:
                 data = self._conn.recv(1024)
@@ -76,7 +76,7 @@ class ConnThread(threading.Thread):
                 case QueryType.FIND_NODE:
                     msg = FindNodeMsg()
                 case QueryType.FIND_KEY:
-                    msg = FindKeyMsg()
+                    msg = FindValueMsg()
                 case _:
                     self.send(ErrorMsg(code=ErrCode.METHOD, msg="unknown query type").to_bencoding())
                     error("conn_thread", str(self), "Unknown query type")
@@ -94,7 +94,7 @@ class ConnThread(threading.Thread):
             res_msg = self._callbacks[qtype](msg)
             self.send(res_msg.to_bencoding())
 
-        info("conn_thread", "run", "disconnected")
+        #info("conn_thread", "run", "disconnected")
 
 
 class Server(threading.Thread):

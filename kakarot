@@ -112,8 +112,11 @@ class ServerThreadManager():
         # Wait till all threads have started
 
         for t in self._pool:
-            bootstrap_lst = self._pick_random(node_list, 1)
+            bootstrap_lst = self._pick_random(node_list, 3)
             t._node.bootstrap(bootstrap_lst)
+
+        for i in range(10):
+            self._pool[0]._node.req_store(f"key{i}", f"value{i}")
 
         time.sleep(5)
         for t in self._pool:
@@ -167,12 +170,13 @@ class Kakarot():
         node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
         node.start()
         time.sleep(1)
-        node.ping(target.uuid, target.ip, target.port)
+        node.req_ping(target.uuid, target.ip, target.port)
         node.stop()
 
         print("done")
 
     def do_find_node(self, state):
+        print(state.target)
         node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
         node.start()
         time.sleep(1)
@@ -182,7 +186,8 @@ class Kakarot():
                 return
             node.bootstrap([peer])
 
-        node.req_find_node(state.target)
+        for target in state.target:
+            node.req_find_node(target)
 
         node.stop()
 

@@ -95,7 +95,7 @@ def parse_args(state):
     find_node.add_argument('-D', '--debug',       help='enable debugging', action='store_true')
     find_node.add_argument('-k', '--keyspace',    help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
     find_node.add_argument('-p', '--port',        help='listen port', metavar="PORT", type=int, default=default_port)
-    find_node.add_argument('-t', '--target',      help='target uuid', metavar="ADDRESS", type=int, required=True)
+    find_node.add_argument('-t', '--target',      help='target uuid', metavar="ADDRESS", action="append", type=int, required=True)
     find_node.add_argument('-u', '--uuid',        help='uuid', metavar="UUID", type=int)
     find_node.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str)
 
@@ -172,7 +172,7 @@ def parse_args(state):
         state.key          = args.key
         state.value        = args.value
     elif args.command == "find_key":
-        state.do_store     = True
+        state.do_find_key  = True
         state.port         = args.port
         state.keyspace     = args.keyspace
         state.bucket_size  = args.bucket_size
