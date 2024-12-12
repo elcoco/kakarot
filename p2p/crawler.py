@@ -89,14 +89,22 @@ class ShortList():
 
     def get_results(self, limit=None):
         """ Return a list of K peers (or less if we couldn't find more) sorted by closeness """
-        count = limit or self._limit
-        return [p for p in self._nearest[:count] if self.is_contacted(p)]
+        return [p for p in self._nearest[:self._limit] if self.is_contacted(p)][:limit]
+
+    def get_nearest_peers(self, limit: Optional[int]=None):
+        """ Return the next set of uncontacted peers from the shortlist.
+            If limit == None, return uncontacted peers, in top K peers ranked by closeness """
+        return [p for p in self._nearest[:self._limit]][:limit]
 
     def get_uncontacted_peers(self, limit: Optional[int]=None):
         """ Return the next set of uncontacted peers from the shortlist.
             If limit == None, return uncontacted peers, in top K peers ranked by closeness """
-        count = limit or self._limit
-        return [p for p in self._nearest[:count] if not self.is_contacted(p)]
+        return [p for p in self._nearest[:self._limit] if not self.is_contacted(p)][:limit]
+
+    def get_contacted_peers(self, limit: Optional[int]=None):
+        """ Return the next set of uncontacted peers from the shortlist.
+            If limit == None, return uncontacted peers, in top K peers ranked by closeness """
+        return [p for p in self._nearest[:self._limit] if self.is_contacted(p)][:limit]
 
     def has_uncontacted_peers(self):
         """ Check if the top K peers have all been contacted """
@@ -179,6 +187,7 @@ class NodeCrawler(CrawlerBaseClass):
         if (msg_res := send_request(peer.ip, peer.port, msg_req)):
             assert type(msg_res) != MsgError, f"Find node received an error from: {peer}"
             self._table.insert_peer(peer, self._origin)
+            self.shortlist.set_contacted(peer)
 
             # add received peers to new_peers if not already contacted
             new_peers = [Peer(x["uuid"], x["ip"], x["port"]) for x in msg_res.return_values[MsgKey.NODES]]
@@ -188,6 +197,7 @@ class NodeCrawler(CrawlerBaseClass):
         else:
             # Request failed, remove peer from our routing table (if it's there)
             self._table.remove_peer(peer, self._origin.uuid)
+            self.shortlist.set_rejected(peer)
 
         return new_peers
 
@@ -196,11 +206,8 @@ class NodeCrawler(CrawlerBaseClass):
             assert self._origin.uuid != peer.uuid, "Don't add ourself to shortlist"
 
             if new_peers := self.request_nodes_from_peer(peer):
-                self.shortlist.set_contacted(peer)
                 for p in new_peers:
                     self.shortlist.add(p)
-            else:
-                self.shortlist.set_rejected(peer)
 
     def find(self):
 
@@ -216,33 +223,37 @@ class ValueCrawler(CrawlerBaseClass):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def request_value_from_peer(self, peer: Peer):
+    def request_value_from_peer(self, peer: Peer) -> str|list[Peer]:
         msg_req = FindValueMsg(uuid=self._origin.uuid, ip=self._origin.ip, port=self._origin.port)
         msg_req.key = self.target_uuid
-        new_peers = []
         self._connections += 1
 
         if (msg_res := send_request(peer.ip, peer.port, msg_req)):
             assert type(msg_res) != MsgError, f"Find node received an error from: {peer}"
             self._table.insert_peer(peer, self._origin)
+            self.shortlist.set_contacted(peer)
 
             # Check if peer returned the value we were looking for or a list of closest peers
             if value := msg_res.return_values.get(MsgKey.VALUE):
                 return value
+            else:
+                new_peers = [Peer(x["uuid"], x["ip"], x["port"]) for x in msg_res.return_values[MsgKey.NODES]]
+                for p in new_peers:
+                    p.parent = peer
+                return new_peers
 
-            new_peers = [Peer(x["uuid"], x["ip"], x["port"]) for x in msg_res.return_values[MsgKey.NODES]]
-            for p in new_peers:
-                p.parent = peer
+        else:
+            # Request failed, remove peer from our routing table (if it's there)
+            self._table.remove_peer(peer, self._origin.uuid)
+            self.shortlist.set_rejected(peer)
 
-        return new_peers
-
+        return []
 
     def handle_peers(self, peers: list[Peer]):
         for peer in peers:
             assert self._origin.uuid != peer.uuid, "Don't add ourself to shortlist"
 
             if result := self.request_value_from_peer(peer):
-                self.shortlist.set_contacted(peer)
 
                 # Check if method returned list with new peers or the value we were searching for
                 if not isinstance(result, list):
@@ -251,17 +262,11 @@ class ValueCrawler(CrawlerBaseClass):
 
                 for p in result:
                     self.shortlist.add(p)
-            else:
-                self.shortlist.set_rejected(peer)
 
     def find(self):
         while self.shortlist.has_uncontacted_peers():
             peers = self._find()
             if value := self.handle_peers(peers):
-                # TODO!!!!!
-                # Cache key at closest node that didn't have the k:v pair
-                #if p := self.shortlist.get_results(limit=1):
-                #    self.req_store(k, value, target_peer=p[0])
                 print(f"Finished in {self._round} rounds, connections: {self._connections}")
                 return value
 

@@ -18,6 +18,21 @@ from p2p.peer import Peer
 
 from core.utils import debug, info, error
 
+"""
+    Join:
+
+        1. Insert bootstrap node in bucket
+        2. Perform FIND_NODE RPC on our own UUID
+        3. Refresh all buckets further away than it's closest neighbor (?)
+
+    Periodical bucket refresh:
+
+        1. Do for every bucket that has not had a lookup for > 1 hour:
+        2. Pick random UUID from that bucket's UUID range.
+        3. Perform FIND_NODE RPC on this UUID
+
+"""
+
 
 class Node(Server):
     def __init__(self, ip: str, port: int, keyspace: int, bucket_size: int, alpha: int, uuid: Optional[int]=None) -> None:
@@ -172,19 +187,28 @@ class Node(Server):
         key_uuid = self._store.get_hash(k)
         boot_peers = self._table.get_closest_nodes(origin, key_uuid, amount=self._alpha)
         crawler = ValueCrawler(self._bucket_size, self._alpha, self._table, origin, boot_peers, key_uuid)
-        value = crawler.find()
+
+        if value := crawler.find():
+            print(crawler.shortlist.get_results(limit=1))
+
+            # Cache key at closest node that didn't have the k:v pair
+            for p in crawler.shortlist.get_contacted_peers()[1:]:
+                if self.req_store(k, value, target_peer=p):
+                    break
+
         print(crawler.shortlist.print_results())
         return value
 
     def req_store(self, k: str, v: str, target_peer: Optional[Peer]=None):
         """ Find nodes close to <k> and ask them to store the k:v pair.
-            If target_peer != None, don't search, just ask only this peer """
-        origin = Peer(self._uuid, self._ip, self._port)
+            If target_peer != None, don't search, just ask only this peer.
+            Returns: True if at least one of them was stored succesfully. """
 
         target_uuid = self._store.get_hash(k)
         msg_req = StoreMsg(uuid=self._uuid, ip=self._ip, port=self._port)
         msg_req.key = target_uuid
         msg_req.value = v
+        result = False
 
         print(f"Finding key @ {target_uuid:016b}")
 
@@ -197,9 +221,11 @@ class Node(Server):
             if (msg_res := send_request(peer.ip, peer.port, msg_req)):
                 assert type(msg_res) != MsgError, f"store received an error from: {peer}"
                 info("node", "req_store", f"stored {k}:{v} @ {peer}")
+                result = True
             else:
                 self._table.remove_peer(peer, self._uuid)
                 error("node", "req_store", f"peer didn't respond: {peer}")
+        return result
 
     def bootstrap(self, peers):
         """ Add bootstrap nodes to table and do a lookup for our own uuid in these new
@@ -214,9 +240,6 @@ class Node(Server):
             self._table.insert_peer(peer, origin)
 
         self.req_find_node(self._uuid)
-
-
-        print("end")
 
     def run(self):
         info("node", "run", f"starting listener")

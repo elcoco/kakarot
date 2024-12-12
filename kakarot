@@ -16,16 +16,6 @@ from core.config import Config
 
 logger = logging.getLogger("kakarot")
 
-"""
-TODO: Next step would be to implement ping and request/respond to find peers
-      That would allow us to test all the network routing
-
-TODO: Create cli find_node, ping etc... for easier testing
-TODO: send only uuid with query,res,error message since receiver can get other details from connection
-TODO: for response message, transaction_id should be positional
-
-"""
-
 
 class PeerThread(threading.Thread):
     def __init__(self, uuid: int, keyspace: int, bucket_size: int, alpha: int):
@@ -173,7 +163,6 @@ class Kakarot():
 
         node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
         node.start()
-        time.sleep(1)
         node.req_ping(target.uuid, target.ip, target.port)
         node.stop()
 
@@ -183,7 +172,6 @@ class Kakarot():
         print(state.target)
         node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
         node.start()
-        time.sleep(1)
 
         if state.bootstrap:
             if (peer := self._parse_id(state.bootstrap)) == None:
@@ -200,7 +188,6 @@ class Kakarot():
     def do_find_key(self, state):
         node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
         node.start()
-        time.sleep(1)
         if state.bootstrap:
             if (peer := self._parse_id(state.bootstrap)) == None:
                 return

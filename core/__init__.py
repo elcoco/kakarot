@@ -78,7 +78,7 @@ def parse_args(state):
     run.add_argument('-k', '--keyspace',  help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
     run.add_argument('-p', '--port',  help='listen port', metavar="PORT", type=int, default=default_port)
     run.add_argument('-u', '--uuid',  help='uuid', metavar="UUID", type=int)
-    run.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str)
+    run.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str, required=True)
 
     ping = subparsers.add_parser("ping",     help="run node, perform a ping and exit")
     ping.add_argument('-a', '--alpha',       help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=default_alpha)
@@ -97,7 +97,7 @@ def parse_args(state):
     find_node.add_argument('-p', '--port',        help='listen port', metavar="PORT", type=int, default=default_port)
     find_node.add_argument('-t', '--target',      help='target uuid', metavar="ADDRESS", action="append", type=int, required=True)
     find_node.add_argument('-u', '--uuid',        help='uuid', metavar="UUID", type=int)
-    find_node.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str)
+    find_node.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str, required=True)
 
     store = subparsers.add_parser("store", help="store a key value pair")
     store.add_argument('-a', '--alpha',       help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=default_alpha)
@@ -106,7 +106,7 @@ def parse_args(state):
     store.add_argument('-k', '--keyspace',    help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
     store.add_argument('-p', '--port',        help='listen port', metavar="PORT", type=int, default=default_port)
     store.add_argument('-u', '--uuid',        help='uuid', metavar="UUID", type=int)
-    store.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str)
+    store.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str, required=True)
     store.add_argument('-K', '--key',         help='key of data', metavar="KEY", type=str, required=True)
     store.add_argument('-V', '--value',       help='value of data', metavar="VALUE", type=str, required=True)
 
@@ -117,7 +117,7 @@ def parse_args(state):
     find_key.add_argument('-k', '--keyspace',    help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
     find_key.add_argument('-p', '--port',        help='listen port', metavar="PORT", type=int, default=default_port)
     find_key.add_argument('-u', '--uuid',        help='uuid', metavar="UUID", type=int)
-    find_key.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str)
+    find_key.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str, required=True)
     find_key.add_argument('-K', '--key',         help='key of data', metavar="KEY", type=str, required=True)
 
     args = parser.parse_args()
