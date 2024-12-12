@@ -115,6 +115,10 @@ class ServerThreadManager():
             bootstrap_lst = self._pick_random(node_list, 1)
             t._node.bootstrap(bootstrap_lst)
 
+        for t in self._pool:
+            bootstrap_lst = self._pick_random(node_list, 1)
+            t._node.bootstrap(bootstrap_lst)
+
         for i in range(10):
             self._pool[0]._node.req_store(f"key{i}", f"value{i}")
 

@@ -13,7 +13,7 @@ from p2p.network.utils import send_request
 
 from p2p.store import Store
 from p2p.routing import RouteTable
-from p2p.crawler import ShortList, NodeCrawler
+from p2p.crawler import ShortList, NodeCrawler, ValueCrawler
 from p2p.peer import Peer
 
 from core.utils import debug, info, error
@@ -156,33 +156,11 @@ class Node(Server):
         shortlist.print_results()
         return shortlist.get_results()
 
-    def request_nodes_from_peer(self, peer: Peer, target_uuid: int):
-        origin = Peer(self._uuid, self._ip, self._port)
-
-        msg_req = FindNodeMsg(uuid=self._uuid, ip=self._ip, port=self._port)
-        msg_req.target_uuid = target_uuid
-        new_peers = []
-
-        if (msg_res := send_request(peer.ip, peer.port, msg_req)):
-            assert type(msg_res) != MsgError, f"Find node received an error from: {peer}"
-            self._table.insert_peer(peer, origin)
-
-            # add received peers to new_peers if not already contacted
-            new_peers = [Peer(x["uuid"], x["ip"], x["port"]) for x in msg_res.return_values[MsgKey.NODES]]
-            for p in new_peers:
-                p.parent = peer
-
-        else:
-            # Request failed, remove peer from our routing table (if it's there)
-            self._table.remove_peer(peer, self._uuid)
-
-        return new_peers
-
     def req_find_node(self, target_uuid: int):
         origin = Peer(self._uuid, self._ip, self._port)
-        crawler = NodeCrawler(self._bucket_size, self._alpha, self._table, origin, target_uuid)
         boot_peers = self._table.get_closest_nodes(origin, target_uuid, amount=self._alpha)
-        peers = crawler.find(boot_peers)
+        crawler = NodeCrawler(self._bucket_size, self._alpha, self._table, origin, boot_peers, target_uuid)
+        peers = crawler.find()
         print(crawler.shortlist.print_results())
         return peers
 
@@ -192,59 +170,11 @@ class Node(Server):
             If key is found, store key at closest node to <K> that doesn't have the key stored. """
         origin = Peer(self._uuid, self._ip, self._port)
         key_uuid = self._store.get_hash(k)
-        shortlist = ShortList(key_uuid, self._bucket_size)
-
-        # Add ourself to rejected nodes so we don't add ourselves to the shortlist
-        shortlist.set_rejected(origin)
-
-        info("node", "find_value", f"finding '{k} ({key_uuid:016b}")
-
-        # Add initial <alpaha> closest peers
-        for peer in self._table.get_closest_nodes(origin, key_uuid, amount=self._alpha):
-            shortlist.add(peer)
-
-        #while shortlist.has_uncontacted_peers():
-        while not shortlist.is_complete() and shortlist.has_uncontacted_peers():
-            peers = shortlist.get_uncontacted_peers(self._alpha)
-
-            for peer in peers:
-                assert (origin.uuid, origin.ip, origin.port) != (peer.uuid, peer.ip, peer.port), "Don't add origin to shortlist"
-
-                msg_req = FindValueMsg(uuid=self._uuid, ip=self._ip, port=self._port)
-                msg_req.key = key_uuid
-
-                if (msg_res := send_request(peer.ip, peer.port, msg_req)):
-                    assert type(msg_res) != MsgError, f"Find node received an error from: {peer}"
-                    self._table.insert_peer(peer, origin)
-
-
-                    # add received peers to new_peers if not already contacted
-                    if value := msg_res.return_values.get(MsgKey.VALUE):
-                        info("node", "find_value", f"Found key '{value}' @ {peer}")
-
-                        # Cache key at closest node that didn't have the k:v pair
-                        print(shortlist.print_results())
-                        if p := shortlist.get_results(limit=1):
-                            self.req_store(k, value, target_peer=p[0])
-
-                        return value
-
-                    shortlist.set_contacted(peer)
-
-
-                    new_peers = [Peer(x["uuid"], x["ip"], x["port"]) for x in msg_res.return_values[MsgKey.NODES]]
-                    for p in new_peers:
-                        shortlist.add(p)
-                        p.parent = peer
-
-                else:
-                    # Request failed, remove peer from our routing table (if it's there)
-                    self._table.remove_peer(peer, self._uuid)
-                    shortlist.set_rejected(peer)
-        
-        print(shortlist.print_results())
-        error("node", "find_value", f"Failed to find key: {k} ({key_uuid})")
-
+        boot_peers = self._table.get_closest_nodes(origin, key_uuid, amount=self._alpha)
+        crawler = ValueCrawler(self._bucket_size, self._alpha, self._table, origin, boot_peers, key_uuid)
+        value = crawler.find()
+        print(crawler.shortlist.print_results())
+        return value
 
     def req_store(self, k: str, v: str, target_peer: Optional[Peer]=None):
         """ Find nodes close to <k> and ask them to store the k:v pair.
@@ -270,7 +200,6 @@ class Node(Server):
             else:
                 self._table.remove_peer(peer, self._uuid)
                 error("node", "req_store", f"peer didn't respond: {peer}")
-
 
     def bootstrap(self, peers):
         """ Add bootstrap nodes to table and do a lookup for our own uuid in these new
