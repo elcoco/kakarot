@@ -3,15 +3,19 @@ from typing import Optional
 
 from core.utils import debug, info, error
 
+from p2p.store import Store
 from p2p.peer import Peer
 
 
 class RouteTable():
-    def __init__(self, keyspace: int, bucket_size: int, origin_uuid) -> None:
+    def __init__(self, store: Store, keyspace: int, bucket_size: int, origin_uuid) -> None:
         self._keyspace = keyspace
         self._bucket_size = bucket_size
         self._origin_uuid = origin_uuid
         self._lock = threading.Lock()
+
+        # Reference to k:v store
+        self._store = store
 
         r"""
         source: https://www.youtube.com/watch?v=NxhZ_c8YX8E
@@ -106,6 +110,18 @@ class RouteTable():
     def _bucket_is_full(self, bucket: int):
         return len(self._k_buckets[bucket]) >= self._bucket_size
 
+    def find_next_neighbour(self, peer: Peer, origin_uuid: int):
+        """ Find the next peer from <peer> """
+        bucket = peer.find_significant_common_bits(origin_uuid, self._keyspace)
+
+        # Search forwards for next known peer
+        for b in range(bucket, self._keyspace, 1):
+            for p in sorted(self._k_buckets[b], key=lambda x: x.get_distance(origin_uuid)):
+                if p.uuid > peer.uuid:
+                    return p
+            else:
+                continue
+
     def insert_peer(self, peer: Peer, origin: Peer):
         """ We have a least seen eviction policy and we prefer old peers because they tend to
             be reliable than new peers. Apparently research concluded that peers that have been
@@ -132,6 +148,7 @@ class RouteTable():
                     self._k_buckets[bucket].remove(oldest_peer)
                     self._k_buckets[bucket].append(oldest_peer)
                     #info("route_table", "insert_peer", "bucket full, discard peer: {peer}")
+
                 else:
                     # peer doesn't respond so we replace it
                     self._k_buckets[bucket].remove(oldest_peer)
@@ -140,6 +157,8 @@ class RouteTable():
 
             else:
                 self._k_buckets[bucket].append(peer)
+
+
                 #info("route_table", "insert_peer", f"adding new peer: {peer}")
 
     def remove_peer(self, peer: Peer, origin_uuid: int):

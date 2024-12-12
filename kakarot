@@ -8,7 +8,9 @@ import logging
 
 from queue import Queue
 
-from p2p.node import Node, Peer
+from p2p.node import Node
+from p2p.peer import Peer
+
 from core import state
 from core.utils import debug, info, error
 from core.config import Config
@@ -110,7 +112,7 @@ class ServerThreadManager():
             t._node.bootstrap(bootstrap_lst)
 
         for i in range(10):
-            self._pool[0]._node.req_store(f"key{i}", f"value{i}")
+            self._pool[0]._node.call_store(f"value{i}", key_str=f"key{i}")
 
         time.sleep(5)
         for t in self._pool:
@@ -163,7 +165,7 @@ class Kakarot():
 
         node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
         node.start()
-        node.req_ping(target.uuid, target.ip, target.port)
+        node.call_ping(target.uuid, target.ip, target.port)
         node.stop()
 
         print("done")
@@ -179,7 +181,7 @@ class Kakarot():
             node.bootstrap([peer])
 
         for target in state.target:
-            node.req_find_node(target)
+            node.call_find_node(target)
 
         node.stop()
 
@@ -192,7 +194,7 @@ class Kakarot():
             if (peer := self._parse_id(state.bootstrap)) == None:
                 return
             node.bootstrap([peer])
-            node.req_find_value(state.key)
+            node.call_find_value(state.key)
             # do stuff
         node.stop()
 
@@ -204,7 +206,7 @@ class Kakarot():
             if (peer := self._parse_id(state.bootstrap)) == None:
                 return
             node.bootstrap([peer])
-            node.req_store(state.key, state.value)
+            node.call_store(state.value, key_str=state.key)
             # do stuff
         node.stop()
 
