@@ -115,7 +115,7 @@ class ResponseMsg(MsgBaseClass):
             self.set_sender_id(uuid, ip, port)
 
         # we can set time between request and response
-        self._response_time: int = -1
+        self._response_time: float = -1
         self.msg_type = MsgType.RESPONSE
 
     @property
@@ -144,7 +144,7 @@ class ResponseMsg(MsgBaseClass):
         return self._exec_time
 
     @response_time.setter
-    def response_time(self, exec_time: int):
+    def response_time(self, exec_time: float):
         self._exec_time = exec_time
 
     @property

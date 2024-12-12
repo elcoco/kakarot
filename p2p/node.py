@@ -13,7 +13,7 @@ from p2p.network.utils import send_request
 
 from p2p.store import Store
 from p2p.routing import RouteTable
-from p2p.crawler import ShortList
+from p2p.crawler import ShortList, NodeCrawler
 from p2p.peer import Peer
 
 from core.utils import debug, info, error
@@ -156,7 +156,7 @@ class Node(Server):
         shortlist.print_results()
         return shortlist.get_results()
 
-    def get_nodes_from_peer(self, peer: Peer, target_uuid: int):
+    def request_nodes_from_peer(self, peer: Peer, target_uuid: int):
         origin = Peer(self._uuid, self._ip, self._port)
 
         msg_req = FindNodeMsg(uuid=self._uuid, ip=self._ip, port=self._port)
@@ -179,41 +179,12 @@ class Node(Server):
         return new_peers
 
     def req_find_node(self, target_uuid: int):
-        """ Initiate an iterative node lookup """
-        info("peer", "req_find_node", f"sending find_node: {target_uuid}")
         origin = Peer(self._uuid, self._ip, self._port)
-        shortlist = ShortList(target_uuid, self._bucket_size)
-
-        # Add ourself to rejected nodes so we don't add ourselves to the shortlist
-        shortlist.set_rejected(origin)
-        round = 1
-
-        peers = []
-        #print(self._table)
-
-        # Add initial <alpaha> closest peers
-        for peer in self._table.get_closest_nodes(origin, target_uuid, amount=self._alpha):
-            shortlist.add(peer)
-
-        #while shortlist.has_uncontacted_peers():
-        while not shortlist.is_complete() and shortlist.has_uncontacted_peers():
-            round += 1
-            peers = shortlist.get_peers(self._alpha)
-
-            for peer in peers:
-                assert (origin.uuid, origin.ip, origin.port) != (peer.uuid, peer.ip, peer.port), "Don't add origin to shortlist"
-
-                if new_peers := self.get_nodes_from_peer(peer, target_uuid):
-                    shortlist.set_contacted(peer)
-                    for p in new_peers:
-                        shortlist.add(p)
-                else:
-                    shortlist.set_rejected(peer)
-
-        print(f"Finished in {round} rounds")
-        shortlist.print_results()
-        #print(self._table)
-        return shortlist.get_results()
+        crawler = NodeCrawler(self._bucket_size, self._alpha, self._table, origin, target_uuid)
+        boot_peers = self._table.get_closest_nodes(origin, target_uuid, amount=self._alpha)
+        peers = crawler.find(boot_peers)
+        print(crawler.shortlist.print_results())
+        return peers
 
     def req_find_value(self, k: str):
         """ Do an iterative search for nodes close to <k> to find k:v pair.
@@ -234,7 +205,7 @@ class Node(Server):
 
         #while shortlist.has_uncontacted_peers():
         while not shortlist.is_complete() and shortlist.has_uncontacted_peers():
-            peers = shortlist.get_peers(self._alpha)
+            peers = shortlist.get_uncontacted_peers(self._alpha)
 
             for peer in peers:
                 assert (origin.uuid, origin.ip, origin.port) != (peer.uuid, peer.ip, peer.port), "Don't add origin to shortlist"

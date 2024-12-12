@@ -112,7 +112,7 @@ class ServerThreadManager():
         # Wait till all threads have started
 
         for t in self._pool:
-            bootstrap_lst = self._pick_random(node_list, 3)
+            bootstrap_lst = self._pick_random(node_list, 1)
             t._node.bootstrap(bootstrap_lst)
 
         for i in range(10):

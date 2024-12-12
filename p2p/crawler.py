@@ -1,6 +1,10 @@
 from typing import Optional
 
 from p2p.peer import Peer
+from p2p.routing import RouteTable
+from p2p.network.utils import send_request
+from p2p.network.message import PingMsg, StoreMsg, FindNodeMsg, FindValueMsg, ResponseMsg, ErrorMsg
+from p2p.network.message import MsgError, MsgKey
 
 
 class ShortList():
@@ -49,7 +53,7 @@ class ShortList():
         # Peers that did not respond end up here
         self._rejected = []
 
-        self._closest_peer: Optional[Peer] = None
+        self.closest_peer: Optional[Peer] = None
 
     def __repr__(self):
         out = []
@@ -94,11 +98,11 @@ class ShortList():
         self._list.append(peer)
 
         # update closest peer
-        if not self._closest_peer:
-            self._closest_peer = peer
+        if not self.closest_peer:
+            self.closest_peer = peer
             return True
-        if peer.get_distance(self._target_uuid) < self._closest_peer.get_distance(self._target_uuid):
-            self._closest_peer = peer
+        if peer.get_distance(self._target_uuid) < self.closest_peer.get_distance(self._target_uuid):
+            self.closest_peer = peer
             return True
 
     def is_complete(self):
@@ -111,11 +115,134 @@ class ShortList():
 
         return sorted(self._contacted, key=lambda x: x.get_distance(self._target_uuid))[:limit]
 
-    def get_peers(self, limit: int):
-        """ Return the next set of peers from the shortlist """
-        return sorted(self._list, key=lambda x: x.get_distance(self._target_uuid))[:limit]
+    def get_uncontacted_peers(self, limit: Optional[int]=None):
+        """ Return the next set of uncontacted peers from the shortlist.
+            If limit == None, return all uncontacted peers """
+        count = limit or self._limit
+        return sorted(self._list, key=lambda x: x.get_distance(self._target_uuid))[:count]
 
     def print_results(self):
         print(f"FIND_PEER RESULTS ({self._target_uuid:016b}, {self._target_uuid})")
         for i,peer in enumerate(self.get_results()):
             print(f"{i:2} {' > '.join(peer.trace_back())}")
+
+
+class CrawlerBaseClass():
+    """ 
+        Initiate an iterative node lookup
+        The process:
+        We keep a list (ShortList) of K nodes. These nodes are sorted by distance from the Key/UUID
+        that we're looking for
+
+        1. Calls find_{node|key} to current ALPHA nearest not already queried nodes,
+           adding results to current nearest list of k nodes.
+        2. If in step 1 a newer node is found than previously known, go back to step 1
+        3. If in step 1 no newer node is found than previously known, call find_{node|key}
+           to all K nearest nodes that we have not queried before.
+           yet queried, 
+        4. Repeat until nearest list has all been queried.
+    """
+    def __init__(self, k: int, alpha: int, table: RouteTable, origin: Peer, target_uuid: int):
+        self._k = k
+        self._alpha = alpha
+        self.target_uuid = target_uuid
+
+        # We need access to the routing table so we can newly discovered peers to it
+        self._table = table
+
+
+        # Create shortlist object and add ourself to the rejected list so we don't insert
+        # ourselves in the list
+        self._origin = origin
+        self.shortlist = ShortList(target_uuid, k)
+        self.shortlist.set_rejected(origin)
+
+        # Keep track of amount iterations and connections for debugging purposes
+        self._round = 1
+        self._connections = 1
+
+        # Keep track of closest Peers inbetween iterations so we can detect if newer peers have been found
+        self._prev_closest: Optional[Peer] = None
+
+    def handle_peers(self, peers: list[Peer]):
+        """ Must be implemented when subclassed. """
+
+    def request_nodes_from_peer(self, peer: Peer):
+        """ Must be implemented when subclassed. """
+
+    def find(self, bootstrap_peers: Optional[list[Peer]]=None):
+
+        # Add initial nodes to the shortlist
+        if bootstrap_peers:
+            for peer in bootstrap_peers:
+                self.shortlist.add(peer)
+
+        while self.shortlist.has_uncontacted_peers():
+            self._round += 1
+
+            # If previous round didn't return any newer peers than already seen, query
+            # all uncontacted peers for this round
+            if self._prev_closest == self.shortlist.closest_peer:
+                peers = self.shortlist.get_uncontacted_peers()
+            else:
+                peers = self.shortlist.get_uncontacted_peers(self._alpha)
+
+            self.handle_peers(peers)
+
+            self._prev_closest = self.shortlist.closest_peer
+
+        print(f"Finished in {self._round} rounds")
+        return self.shortlist.get_results()
+            
+
+class NodeCrawler(CrawlerBaseClass):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def request_nodes_from_peer(self, peer: Peer):
+
+        msg_req = FindNodeMsg(uuid=self._origin.uuid, ip=self._origin.ip, port=self._origin.port)
+        msg_req.target_uuid = self.target_uuid
+        new_peers = []
+
+        if (msg_res := send_request(peer.ip, peer.port, msg_req)):
+            assert type(msg_res) != MsgError, f"Find node received an error from: {peer}"
+            self._table.insert_peer(peer, self._origin)
+
+            # add received peers to new_peers if not already contacted
+            new_peers = [Peer(x["uuid"], x["ip"], x["port"]) for x in msg_res.return_values[MsgKey.NODES]]
+            for p in new_peers:
+                p.parent = peer
+
+        else:
+            # Request failed, remove peer from our routing table (if it's there)
+            self._table.remove_peer(peer, self._origin.uuid)
+
+        return new_peers
+
+    def handle_peers(self, peers: list[Peer]):
+        for peer in peers:
+            assert self._origin.uuid != peer.uuid, "Don't add ourself to shortlist"
+
+            if new_peers := self.request_nodes_from_peer(peer):
+                self.shortlist.set_contacted(peer)
+                for p in new_peers:
+                    self.shortlist.add(p)
+            else:
+                self.shortlist.set_rejected(peer)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
