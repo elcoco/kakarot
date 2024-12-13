@@ -65,7 +65,7 @@ class MaintenanceThread(threading.Thread):
 
 
 
-class TaskDeleteExpiredCache(Task):
+class TaskDeleteExpired(Task):
     def __init__(self, store: Store, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._store = store
@@ -108,9 +108,10 @@ class TaskRepublishKeys(Task):
         self._callback = publish_callback
 
     def run(self):
-        debug("task_republish_keys", self.name, "running Periodical republish keys task")
+        info("task_republish_keys", self.name, "running Periodical republish keys task")
         for item in self._store.get_items():
-            self._callback(item.value, key_uuid=item.uuid)
+            if item.needs_republish():
+                self._callback(item.value, key_uuid=item.uuid)
 
 
 class TaskRefreshBuckets(Task):

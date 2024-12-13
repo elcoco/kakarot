@@ -11,7 +11,7 @@ from p2p.network.message import MsgError, MsgKey
 from p2p.network.bencode import BencDecodeError
 from p2p.network.utils import send_request
 
-from p2p.periodical import MaintenanceThread, TaskDeleteExpiredCache, TaskRepublishKeys, TaskRefreshBuckets
+from p2p.periodical import MaintenanceThread, TaskDeleteExpired, TaskRepublishKeys, TaskRefreshBuckets
 
 from p2p.store import Store
 from p2p.routing import RouteTable
@@ -20,6 +20,9 @@ from p2p.peer import Peer
 
 from core.utils import debug, info, error
 
+# TODO: cache/republish store expiration. How to detect if incoming is cache or republish
+# TODO: do the split buckets thing
+
 """
     Join:
         1. Insert bootstrap node in bucket
@@ -27,12 +30,12 @@ from core.utils import debug, info, error
         3. Refresh all buckets further away than it's closest neighbor (?)
 
 """
-HOURLY = 60*60
-DAILY = 60*60*24
+HOUR = 60*60
+DAY = 60*60*24
 
 # Buckets without lookups become stale. Periodic checks refresh stale buckets that have not
 # seen any lookups for <n> seconds.
-BUCKET_REFRESH_INTERVAL = HOURLY
+BUCKET_REFRESH_INTERVAL = HOUR
 
 """
     1. Periodically republish all key value pairs, if they have not been changed/updated for <seconds>
@@ -43,14 +46,14 @@ BUCKET_REFRESH_INTERVAL = HOURLY
        Because we assume that if it is touched within the last hour, all other nodes have been notified
        as well
 """
-STORE_REPUBLISH_INTERVAL = HOURLY
-STORE_EXPIRE_SEC = HOURLY
+STORE_REPUBLISH_INTERVAL = HOUR
+STORE_EXPIRE_SEC = HOUR
 
 """ 1. We need to take responsibility for the k:v that we created. We need to republish every 24h
        to keep them alive
 """
-STORE_ORIGINATOR_REPUBLISH_INTERVAL = DAILY
-STORE_ORIGINATOR_EXPIRE_SEC = DAILY
+PROVIDER_RECORD_REPUBLISH_INTERVAL = DAY
+PROVIDER_RECORD_EXPIRATION_INTERVAL = DAY * 2
 
 
 class Node(Server):
@@ -78,7 +81,9 @@ class Node(Server):
         self._store = Store(self._keyspace, STORE_REPUBLISH_INTERVAL, STORE_EXPIRE_SEC)
         self._table = RouteTable(keyspace, bucket_size, self.call_ping)
 
-        self._originator_store = Store(self._keyspace, STORE_ORIGINATOR_REPUBLISH_INTERVAL, STORE_ORIGINATOR_EXPIRE_SEC)
+        # Store keeps k:v that originate from this node
+        self._provider_store = Store(self._keyspace, PROVIDER_RECORD_REPUBLISH_INTERVAL, PROVIDER_RECORD_EXPIRATION_INTERVAL)
+
         #self._republish_store = Store(self._keyspace)
         #self._cache_store = Store(self._keyspace)
 
@@ -115,9 +120,7 @@ class Node(Server):
         sender = Peer(msg.sender_uuid, msg.sender_ip, msg.sender_port)
         self._store.put_by_uuid(msg.key, msg.value)
         self._handle_new_peer(sender)
-
-        info("node", "store_cb", f"storing: {msg.key} : {msg.value}")
-        print(self._store)
+        info("node", "rpc_store", f"storing: {msg.key} : {msg.value} from {sender}")
         return ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
 
     def rpc_find_key_callback(self, msg: FindValueMsg) -> ResponseMsg|ErrorMsg:
@@ -125,9 +128,10 @@ class Node(Server):
             If key is found on this node, return key. Otherwise return the K closest
             nodes to key that we know of """
         sender = Peer(msg.sender_uuid, msg.sender_ip, msg.sender_port)
-        origin = Peer(self._uuid, self._ip, self._port)
         self._handle_new_peer(sender)
         res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
+        info("node", "rpc_find_key", f"received request: {msg.key}")
+
 
         if value := self._store.get_by_uuid(msg.key):
             res.return_values = { MsgKey.VALUE : value }
@@ -168,10 +172,11 @@ class Node(Server):
         if value := crawler.find():
             print(crawler.shortlist.get_results(limit=1))
 
-            # Cache key at closest node that didn't have the k:v pair
-            for p in crawler.shortlist.get_contacted_peers()[1:]:
-                if self.call_store(value, key_str=k, target_peer=p):
-                    break
+            # NOTE: Disable caching for now, rely on provider republish
+            ## Cache key at closest node that didn't have the k:v pair
+            #for p in crawler.shortlist.get_contacted_peers()[1:]:
+            #    if self.call_store(value, key_str=k, target_peer=p):
+            #        break
 
         print(crawler.shortlist.print_results())
         return value
@@ -209,38 +214,52 @@ class Node(Server):
                 self._table.remove_peer(peer, self._uuid)
                 error("node", "call_store", f"peer didn't respond: {peer}")
 
+        # TODO: this method is used by other methods that do not send store messages
+        #       for records that originate from this node, so then it should not be saved
+        #       in the provider store
         # We need to take responsibility for keeping this k:v alive so we're going
         # to resend it every n seconds. The thread watching the originator_store takes
         # care of that.
-        self._originator_store.put_by_uuid(key_uuid, v)
+        self._provider_store.put_by_uuid(key_uuid, v)
         return result
 
     def _welcome_peer(self, peer: Peer):
         """ We need to check if there's a k:v in store that matches the new_peer's range.
             This implies that this is a new peer that is closer to the key than we previously
-            knew of. We need to notify this peer of this k:v. """
-        # TODO: not tested yet!
+            knew of. We need to notify this peer of this k:v.
+
+            TO prevent a shitton of messages on the network: only publish keys if we are closer
+            to the peer than all other peers that we know of.
+            Also there is a large chance that we know more keys than any other node """
+        # TODO: implement above optimization
         origin = Peer(self._uuid, self._ip, self._port)
 
         if self._table.has_peer(peer, origin):
             return
 
 
-        if not (next_peer := self._table.find_next_neighbour(peer, origin.uuid)):
-            # TODO: do something here
-            return
-        print(f"WELCOME NEW PEER: {peer}")
+        if closest_known := self._table.get_closest_nodes(origin, peer.uuid, 1):
+            if origin.get_distance(peer.uuid) > closest_known[0].get_distance(peer.uuid):
+                return
 
-        for item in self._store.find_kv_in_range(peer.uuid, next_peer.uuid):
-            if item.needs_republish():
-                self.call_store(item.value, key_uuid=item.uuid)
+            range_end = closest_known[0].uuid
+
+            # We need to get next peer not previous peer. If get_closest_nodes() returned a peer
+            # with a smaller UUID, this means there are no peers ahead
+            if range_end < peer.uuid:
+                range_end = 2 ** self._keyspace
+
+            print(f"WELCOME NEW PEER: {peer}, Keys in range: {peer.uuid} - {range_end} =", self._store.find_kv_in_range(peer.uuid, range_end))
+
+            for item in self._store.find_kv_in_range(peer.uuid, range_end):
+                self.call_store(item.value, key_uuid=item.uuid, target_peer=peer)
 
     def buckets_refresh(self, interval: int):
         """ Perform a bucket refresh for stale buckets (buckets that haven't seen a node lookup in <interval> seconds) """
         for bucket in self._table.buckets:
             if bucket.needs_refresh(interval):
-                info("node", "bucket_refresh", f"Refreshing bucket: {bucket._index}")
                 if peer := bucket.get_random_peer():
+                    info("node", "bucket_refresh", f"Refreshing bucket: {bucket._index}")
                     self.call_find_node(peer.uuid)
 
     def _bootstrap_node(self, peers: list[Peer]):
@@ -272,9 +291,10 @@ class Node(Server):
     def run(self):
         # Do some periodic tasks
         t = MaintenanceThread()
-        t.add_task(TaskDeleteExpiredCache(self._store, "expired_cache", 60*60))
-        t.add_task(TaskRepublishKeys(self._originator_store, self.call_store, "originator_store", 60*5))
-        t.add_task(TaskRepublishKeys(self._store, self.call_store, "republish_store", 60*5))
+        t.add_task(TaskDeleteExpired(self._provider_store, "delete_expired", 60*10))
+        t.add_task(TaskRepublishKeys(self._provider_store, self.call_store, "republish_provider", 60*10))
+
+        #t.add_task(TaskRepublishKeys(self._store, self.call_store, "republish_store", 60*5))
         t.add_task(TaskRefreshBuckets(self.buckets_refresh, BUCKET_REFRESH_INTERVAL, "refresh", 30))
         t.start()
 

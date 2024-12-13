@@ -196,6 +196,7 @@ class NodeCrawler(CrawlerBaseClass):
 
         else:
             # Request failed, remove peer from our routing table (if it's there)
+            info("nodecrawler", "req_nodes", "Failed")
             self._table.remove_peer(peer, self._origin.uuid)
             self.shortlist.set_rejected(peer)
 
@@ -244,6 +245,7 @@ class ValueCrawler(CrawlerBaseClass):
 
         else:
             # Request failed, remove peer from our routing table (if it's there)
+            info("nodecrawler", "req_key", "Failed")
             self._table.remove_peer(peer, self._origin.uuid)
             self.shortlist.set_rejected(peer)
 

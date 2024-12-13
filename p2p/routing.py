@@ -187,6 +187,10 @@ class RouteTable():
 
         # Search forwards for next known peer
         for b in range(bucket, self._keyspace, 1):
+
+            print(f"{b} unsorted:", self.buckets[b])
+            print(f"{b} sorted:  ", self.buckets[b].get_sorted(origin_uuid))
+
             for p in self.buckets[b].get_sorted(origin_uuid):
                 if p.uuid > peer.uuid:
                     return p

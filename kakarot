@@ -103,6 +103,9 @@ class ServerThreadManager():
             self._pool.append(t)
             t.start()
 
+            # prevent in sync nodes
+            time.sleep(1)
+
         # Wait till all threads have started
 
         for t in self._pool:

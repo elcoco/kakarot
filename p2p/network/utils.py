@@ -18,7 +18,7 @@ def send_request(ip: str, port: int, msg_req, timeout=5):
         try:
             s.connect((ip, port))
         except ConnectionRefusedError as e:
-            error("peer", "send_recv", str(e))
+            error("peer", "send_recv", f"{str(e)}, {ip}:{port}")
             return
 
         s.settimeout(timeout)
