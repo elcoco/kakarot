@@ -71,7 +71,7 @@ class TaskDeleteExpiredCache(Task):
         self._store = store
 
     def run(self):
-        info("task_delete_expired", self.name, "running Periodical delete expired cache task")
+        debug("task_delete_expired", self.name, "running Periodical delete expired cache task")
 
         for item in self._store.get_items():
             if item.is_expired():
@@ -102,13 +102,13 @@ class TaskRepublishKeys(Task):
                is not republished. Because we assume that when we receive a STORE, the same STORE RPC
                is sent to all K-1 nodes, therefore we don't also need to send it.
     """
-    def __init__(self, store: Store, publish_callback, *args, **kwargs):
+    def __init__(self, store: Store, publish_callback: Callable, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._store = store
         self._callback = publish_callback
 
     def run(self):
-        info("task_republish_keys", self.name, "running Periodical republish keys task")
+        debug("task_republish_keys", self.name, "running Periodical republish keys task")
         for item in self._store.get_items():
             self._callback(item.value, key_uuid=item.uuid)
 
@@ -121,9 +121,11 @@ class TaskRefreshBuckets(Task):
         2. Pick random UUID from that bucket's UUID range.
         3. Perform FIND_NODE RPC on this UUID
     """
-    def __init__(self, table: RouteTable, *args, **kwargs):
+    def __init__(self, refresh_callback: Callable, interval: int, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._table = table
+        self._callback = refresh_callback
+        self._interval = interval
 
     def run(self):
-        info("task_refresh_buckets", self.name, "running Periodical refresh buckets task")
+        debug("task_refresh_buckets", self.name, "running Periodical refresh buckets task")
+        self._callback(interval=self._interval)

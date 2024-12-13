@@ -59,11 +59,3 @@ class Peer():
             else:
                 count += 1
         return count
-
-    def ping(self, origin: "Peer"):
-        msg_req = PingMsg(uuid=origin.uuid, ip=origin.ip, port=origin.port)
-        if (msg_res := send_request(self.ip, self.port, msg_req)):
-            #info("peer", "ping", f"response time: {msg_res.response_time}")
-            return msg_res.response_time
-
-

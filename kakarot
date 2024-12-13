@@ -50,6 +50,8 @@ class PeerThread(threading.Thread):
         self._node.stop()
 
     def run(self):
+        # we don't want the threads to be in sync
+        #time.sleep(10)
 
         t_start = time.time()
 
@@ -105,11 +107,11 @@ class ServerThreadManager():
 
         for t in self._pool:
             bootstrap_lst = self._pick_random(node_list, 1)
-            t._node.bootstrap(bootstrap_lst)
+            t._node.join_network(bootstrap_lst)
 
         for t in self._pool:
             bootstrap_lst = self._pick_random(node_list, 1)
-            t._node.bootstrap(bootstrap_lst)
+            t._node.join_network(bootstrap_lst)
 
         for i in range(10):
             self._pool[0]._node.call_store(f"value{i}", key_str=f"key{i}")
@@ -149,7 +151,7 @@ class Kakarot():
         if state.bootstrap:
             if (peer := self._parse_id(state.bootstrap)) == None:
                 return
-            node.bootstrap([peer])
+            node.join_network([peer])
 
         try:
             while True:
@@ -165,6 +167,7 @@ class Kakarot():
 
         node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
         node.start()
+        node.join_network([])
         node.call_ping(target.uuid, target.ip, target.port)
         node.stop()
 
@@ -175,10 +178,9 @@ class Kakarot():
         node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
         node.start()
 
-        if state.bootstrap:
-            if (peer := self._parse_id(state.bootstrap)) == None:
-                return
-            node.bootstrap([peer])
+        if (peer := self._parse_id(state.bootstrap)) == None:
+            return
+        node.join_network([peer])
 
         for target in state.target:
             node.call_find_node(target)
@@ -190,12 +192,11 @@ class Kakarot():
     def do_find_key(self, state):
         node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
         node.start()
-        if state.bootstrap:
-            if (peer := self._parse_id(state.bootstrap)) == None:
-                return
-            node.bootstrap([peer])
-            node.call_find_value(state.key)
-            # do stuff
+        if (peer := self._parse_id(state.bootstrap)) == None:
+            return
+        node.join_network([peer])
+        node.call_find_value(state.key)
+        # do stuff
         node.stop()
 
     def do_store(self, state):
@@ -205,7 +206,7 @@ class Kakarot():
         if state.bootstrap:
             if (peer := self._parse_id(state.bootstrap)) == None:
                 return
-            node.bootstrap([peer])
+            node.join_network([peer])
             node.call_store(state.value, key_str=state.key)
             # do stuff
         node.stop()
@@ -217,10 +218,8 @@ class Kakarot():
                 tm.run()
             except KeyboardInterrupt:
                 tm.stop()
-
         elif state.do_run:
             self.run_node(state)
-
         elif state.do_ping:
             self.do_ping(state)
         elif state.do_find_node:

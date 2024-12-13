@@ -3,6 +3,7 @@ import threading
 import select
 import json
 from typing import Callable, Optional, Any
+import time
 
 from core.utils import debug, info, error
 
@@ -115,6 +116,8 @@ class Server(threading.Thread):
 
         self._max_threads = max_threads
 
+        self._server_is_ready = False
+
     def _get_ip(self):
         return socket.gethostbyname(socket.gethostname())
 
@@ -129,6 +132,10 @@ class Server(threading.Thread):
                 alive += 1
         return alive
 
+    def server_wait_for_ready(self):
+        while not self._server_is_ready:
+            time.sleep(0.1)
+
     def listen(self, timeout=1):
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -140,6 +147,7 @@ class Server(threading.Thread):
             s.listen(1)
 
             read_list = [s]
+            self._server_is_ready = True
 
             while not self._stopped:
 

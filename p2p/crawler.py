@@ -111,7 +111,7 @@ class ShortList():
         return self.get_uncontacted_peers()
 
     def print_results(self):
-        print(f"FIND_PEER RESULTS ({self._target_uuid:016b}, {self._target_uuid})")
+        print(f"RESULTS ({self._target_uuid:016b}, {self._target_uuid})")
         for i,peer in enumerate(self.get_results()):
             print(f"{i:2} {' > '.join(peer.trace_back())}")
 
@@ -186,7 +186,7 @@ class NodeCrawler(CrawlerBaseClass):
 
         if (msg_res := send_request(peer.ip, peer.port, msg_req)):
             assert type(msg_res) != MsgError, f"Find node received an error from: {peer}"
-            self._table.insert_peer(peer, self._origin)
+            self._table.insert_peer(peer, self._origin.uuid)
             self.shortlist.set_contacted(peer)
 
             # add received peers to new_peers if not already contacted
@@ -230,7 +230,7 @@ class ValueCrawler(CrawlerBaseClass):
 
         if (msg_res := send_request(peer.ip, peer.port, msg_req)):
             assert type(msg_res) != MsgError, f"Find node received an error from: {peer}"
-            self._table.insert_peer(peer, self._origin)
+            self._table.insert_peer(peer, self._origin.uuid)
             self.shortlist.set_contacted(peer)
 
             # Check if peer returned the value we were looking for or a list of closest peers
