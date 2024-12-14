@@ -9,7 +9,6 @@ import inspect
 from p2p.network.server import Server
 from p2p.network.message import PingMsg, StoreMsg, FindNodeMsg, FindValueMsg, ResponseMsg, ErrorMsg
 from p2p.network.message import MsgError, MsgKey
-from p2p.network.bencode import BencDecodeError
 from p2p.network.utils import send_request
 
 from p2p.periodical import MaintenanceThread, TaskDeleteExpired, TaskRepublishKeys, TaskRefreshBuckets
@@ -23,6 +22,7 @@ from core.utils import debug, info, error
 
 # TODO: cache/republish store expiration. How to detect if incoming is cache or republish
 # TODO: do the split buckets thing
+# TODO: UPNP
 
 """
     Join:
@@ -79,8 +79,10 @@ class Node(Server):
         # Lookup max <alpha> nodes at a time
         self._alpha = alpha
 
-        self._store = Store(self._keyspace, STORE_REPUBLISH_INTERVAL, STORE_EXPIRE_SEC)
         self._table = RouteTable(keyspace, bucket_size, self.call_ping)
+
+        # Store keeps all incoming messages
+        self._store = Store(self._keyspace, STORE_REPUBLISH_INTERVAL, STORE_EXPIRE_SEC)
 
         # Store keeps k:v that originate from this node
         self._provider_store = Store(self._keyspace, PROVIDER_RECORD_REPUBLISH_INTERVAL, PROVIDER_RECORD_EXPIRATION_INTERVAL)
@@ -96,6 +98,70 @@ class Node(Server):
 
     def _create_uuid(self):
         return random.randrange(0, (2**self._keyspace)-1)
+
+    def _introduce_new_peer(self, peer: Peer):
+        """ We need to check if there's a k:v in store that matches the new_peer's range.
+            This implies that this is a new peer that is closer to the key than we previously
+            knew of. We need to notify this peer of this k:v.
+
+            TO prevent a shitton of messages on the network: only publish keys if we are closer
+            to the peer than all other peers that we know of.
+            Also there is a large chance that we know more keys than any other node """
+        origin = Peer(self._uuid, self._ip, self._port)
+
+        # Only welcome new peers
+        if self._table.has_peer(peer, origin):
+            return
+
+        # Only republish k:v if we are closer to the peer than anyone else
+        if closest_known := self._table.get_closest_nodes(origin, peer.uuid, 1):
+            if origin.get_distance(peer.uuid) > closest_known[0].get_distance(peer.uuid):
+                return
+
+        # Insert peer in table because otherwise TableTraverser wouldn't find it.
+        self._table.insert_peer(peer, self._uuid)
+
+        # Peer's keyspace stretches from it's own UUID to the UUID of the next peer.
+        # Get closest next_peer from <peer> that we know of to mark an end range.
+        # If not found, this peer owns the keyspace until the end of global keyspace
+        traverser = TableTraverser(self._table, origin, self._keyspace, start_peer=peer)
+        if next_peer := traverser.next(sorted=True):
+            range_end = next_peer.uuid
+        else:
+            range_end = 2 ** self._keyspace
+
+        # We should not be in the same range because that would make us owner of the k:v
+        if peer.uuid < origin.uuid < range_end:
+            return
+
+        info("node", "introduce", f"INTRODUCE PEER: {peer}, Keys in range: {peer.uuid} - {range_end} = {self._store.find_kv_in_range(peer.uuid, range_end)}")
+
+        for item in self._store.find_kv_in_range(peer.uuid, range_end):
+            self._call_store(item.value, key_uuid=item.uuid, target_peer=peer)
+
+    def _bootstrap_node(self, peers: list[Peer]):
+        """ Add bootstrap nodes to table and do a lookup for our own uuid in these new
+            nodes to populate our and their routing table.
+            Guess what, _bootstrap() is a method from threading.Thread() ... """
+
+        origin = Peer(self._uuid, self._ip, self._port)
+
+        for peer in peers:
+            info("node", "bootstrap", str(peer))
+            if peer == origin:
+                error("node", "bootstrap", "not bootstrapping from ourself!")
+                continue
+            self._table.insert_peer(peer, origin.uuid)
+
+        self.call_find_node(self._uuid)
+
+    def _handle_new_peer(self, peer: Peer):
+        if peer.uuid == self._uuid:
+            #error("node", "handle_new_peer", f"Dropping new peer, peer is origin")
+            return
+
+        self._introduce_new_peer(peer)
+        self._table.insert_peer(peer, self._uuid)
 
     def rpc_ping_callback(self, msg: PingMsg) -> ResponseMsg|ErrorMsg:
         """ Called by Server(), respond to incoming PING query message """
@@ -119,20 +185,19 @@ class Node(Server):
     def rpc_store_callback(self, msg: StoreMsg) -> ResponseMsg|ErrorMsg:
         """ Called by Server(), respond to incoming STORE query message """
         sender = Peer(msg.sender_uuid, msg.sender_ip, msg.sender_port)
+        info("node", "rpc_store", f"storing: {msg.key} : {msg.value} from {sender}")
         self._store.put_by_uuid(msg.key, msg.value)
         self._handle_new_peer(sender)
-        info("node", "rpc_store", f"storing: {msg.key} : {msg.value} from {sender}")
         return ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
 
     def rpc_find_key_callback(self, msg: FindValueMsg) -> ResponseMsg|ErrorMsg:
         """ Called by Server(), respond to incoming FIND_KEY query message.
             If key is found on this node, return key. Otherwise return the K closest
             nodes to key that we know of """
+        info("node", "rpc_find_key", f"received request: {msg.key}")
         sender = Peer(msg.sender_uuid, msg.sender_ip, msg.sender_port)
         self._handle_new_peer(sender)
         res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
-        info("node", "rpc_find_key", f"received request: {msg.key}")
-
 
         if value := self._store.get_by_uuid(msg.key):
             res.return_values = { MsgKey.VALUE : value }
@@ -157,9 +222,7 @@ class Node(Server):
         origin = Peer(self._uuid, self._ip, self._port)
         boot_peers = self._table.get_closest_nodes(origin, target_uuid, amount=self._alpha)
         crawler = NodeCrawler(self._bucket_size, self._alpha, self._table, origin, boot_peers, target_uuid)
-        peers = crawler.find()
-        print(crawler.shortlist.print_results())
-        return peers
+        return crawler.find()
 
     def call_find_value(self, k: str):
         """ Do an iterative search for nodes close to <k> to find k:v pair.
@@ -169,25 +232,20 @@ class Node(Server):
         key_uuid = self._store.get_hash(k)
         boot_peers = self._table.get_closest_nodes(origin, key_uuid, amount=self._alpha)
         crawler = ValueCrawler(self._bucket_size, self._alpha, self._table, origin, boot_peers, key_uuid)
+        #if value := crawler.find():
+        #    ...
 
-        if value := crawler.find():
-            print(crawler.shortlist.get_results(limit=1))
+        #    # NOTE: Disable caching for now, rely on provider republish
+        #    ## Cache key at closest node that didn't have the k:v pair
+        #    #for p in crawler.shortlist.get_contacted_peers()[1:]:
+        #    #    if self.call_store(value, key_str=k, target_peer=p):
+        #    #        break
+        return crawler.find()
 
-            # NOTE: Disable caching for now, rely on provider republish
-            ## Cache key at closest node that didn't have the k:v pair
-            #for p in crawler.shortlist.get_contacted_peers()[1:]:
-            #    if self.call_store(value, key_str=k, target_peer=p):
-            #        break
-
-        print(crawler.shortlist.print_results())
-        return value
-
-    def call_store(self, v: str, key_str: Optional[str]=None, key_uuid: Optional[int]=None, target_peer: Optional[Peer]=None):
+    def _call_store(self, v: str, key_str: Optional[str]=None, key_uuid: Optional[int]=None, target_peer: Optional[Peer]=None):
         """ Find nodes close to <k> and ask them to store the k:v pair.
             If target_peer != None, don't search, just ask only this peer.
             Returns: True if at least one of them was stored succesfully. """
-
-        print("Called by", inspect.stack()[1][3])
 
         if key_str:
             key_uuid = self._store.get_hash(key_str)
@@ -217,55 +275,13 @@ class Node(Server):
                 self._table.remove_peer(peer, self._uuid)
                 error("node", "call_store", f"peer didn't respond: {peer}")
 
-        # TODO: this method is used by other methods that do not send store messages
-        #       for records that originate from this node, so then it should not be saved
-        #       in the provider store
-        # We need to take responsibility for keeping this k:v alive so we're going
-        # to resend it every n seconds. The thread watching the originator_store takes
-        # care of that.
-        self._provider_store.put_by_uuid(key_uuid, v)
         return result
 
-    def _welcome_peer(self, peer: Peer):
-        """ We need to check if there's a k:v in store that matches the new_peer's range.
-            This implies that this is a new peer that is closer to the key than we previously
-            knew of. We need to notify this peer of this k:v.
-
-            TO prevent a shitton of messages on the network: only publish keys if we are closer
-            to the peer than all other peers that we know of.
-            Also there is a large chance that we know more keys than any other node """
-        origin = Peer(self._uuid, self._ip, self._port)
-
-        # Only welcome new peers
-        if self._table.has_peer(peer, origin):
-            return
-
-        # Only republish k:v if we are closer to the peer than anyone else
-        if closest_known := self._table.get_closest_nodes(origin, peer.uuid, 1):
-            if origin.get_distance(peer.uuid) > closest_known[0].get_distance(peer.uuid):
-                return
-
-        # Insert peer in table because otherwise TableTraverser wouldn't find it.
-        self._table.insert_peer(peer, self._uuid)
-
-        # Peer's keyspace stretches from it's own UUID to the UUID of the next peer.
-        # Get closest next_peer from <peer> that we know of to mark an end range.
-        # If not found, this peer owns the keyspace until the end of global keyspace
-        traverser = TableTraverser(self._table, origin, self._keyspace, start_peer=peer)
-        if next_peer := traverser.next():
-            range_end = next_peer.uuid
-        else:
-            range_end = 2 ** self._keyspace
-
-        # We should not be in the same range because that would make us owner of the k:v
-        if peer.uuid < origin.uuid < range_end:
-            print("We are in range, cancel")
-            return
-
-        print(f"WELCOME NEW PEER: {peer}, Keys in range: {peer.uuid} - {range_end} =", self._store.find_kv_in_range(peer.uuid, range_end))
-
-        for item in self._store.find_kv_in_range(peer.uuid, range_end):
-            self.call_store(item.value, key_uuid=item.uuid, target_peer=peer)
+    def call_store(self, k: str, v: str):
+        self._call_store(v, key_str=k)
+        # We need to take responsibility for keeping this k:v alive so we're going
+        # to resend it every n seconds. The thread watching the originator_store takes care of that.
+        self._provider_store.put_by_str(k, v)
 
     def buckets_refresh(self, interval: int):
         """ Perform a bucket refresh for stale buckets (buckets that haven't seen a node lookup in <interval> seconds) """
@@ -275,38 +291,20 @@ class Node(Server):
                     info("node", "bucket_refresh", f"Refreshing bucket: {bucket._index}")
                     self.call_find_node(peer.uuid)
 
-    def _bootstrap_node(self, peers: list[Peer]):
-        """ Add bootstrap nodes to table and do a lookup for our own uuid in these new
-            nodes to populate our and their routing table.
-            Guess what, _bootstrap() is a method from threading.Thread() ... """
-
-        origin = Peer(self._uuid, self._ip, self._port)
-
-        for peer in peers:
-            info("node", "bootstrap", str(peer))
-            if peer == origin:
-                error("node", "bootstrap", "not bootstrapping from ourself!")
-                continue
-            self._table.insert_peer(peer, origin.uuid)
-
-        self.call_find_node(self._uuid)
-
     def join_network(self, bootstrap_nodes: list[Peer]):
         """ Remember, join() is a method from threading.Thread() ;) """
         self.server_wait_for_ready()
         self._bootstrap_node(bootstrap_nodes)
         self.buckets_refresh(interval=0)
 
-    def _handle_new_peer(self, peer: Peer):
-        self._welcome_peer(peer)
-
     def run(self):
         # Do some periodic tasks
         t = MaintenanceThread()
-        t.add_task(TaskDeleteExpired(self._provider_store, "delete_expired", 60*10))
-        t.add_task(TaskRepublishKeys(self._provider_store, self.call_store, "republish_provider", 60*10))
+        t.add_task(TaskDeleteExpired(self._store, "delete_expired", 10))
+        t.add_task(TaskDeleteExpired(self._provider_store, "provider_delete_expired", 60*10))
+        t.add_task(TaskRepublishKeys(self._provider_store, self._call_store, "republish_provider", 60*10))
 
-        #t.add_task(TaskRepublishKeys(self._store, self.call_store, "republish_store", 60*5))
+        #t.add_task(TaskRepublishKeys(self._store, self._call_store, "republish_store", 60*5))
         t.add_task(TaskRefreshBuckets(self.buckets_refresh, BUCKET_REFRESH_INTERVAL, "refresh", 30))
         t.start()
 

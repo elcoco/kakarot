@@ -55,7 +55,7 @@ class PeerThread(threading.Thread):
 
         t_start = time.time()
 
-        self._node = Node("127.0.0.1", self._port, self._keyspace, self._bucket_size, self._alpha, uuid=self._uuid)
+        self._node = Node("0.0.0.0", self._port, self._keyspace, self._bucket_size, self._alpha, uuid=self._uuid)
         info("peer_thread", str(self._uuid), f"starting {self._node}")
         self._node.run()
         self._stopped = True
@@ -95,7 +95,7 @@ class ServerThreadManager():
 
         for _ in range(self._amount):
             uuid = self._get_uuid(self._keyspace)
-            peer = Peer(uuid, "127.0.0.1", uuid)
+            peer = Peer(uuid, "0.0.0.0", uuid)
             node_list.append(peer)
 
             # NOTE: we use uuid as port number to make testing with large amount of nodes easier to manage
@@ -104,7 +104,7 @@ class ServerThreadManager():
             t.start()
 
             # prevent in sync nodes
-            time.sleep(1)
+            #time.sleep(1)
 
         # Wait till all threads have started
 
@@ -117,7 +117,7 @@ class ServerThreadManager():
             t._node.join_network(bootstrap_lst)
 
         for i in range(10):
-            self._pool[0]._node.call_store(f"value{i}", key_str=f"key{i}")
+            self._pool[0]._node.call_store(f"key{i}", f"value{i}")
 
         time.sleep(5)
         for t in self._pool:
@@ -148,7 +148,7 @@ class Kakarot():
             return
 
     def run_node(self, state):
-        node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node = Node("0.0.0.0", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
         node.start()
 
         if state.bootstrap:
@@ -168,7 +168,7 @@ class Kakarot():
         if (target := self._parse_id(state.target)) == None:
             return
 
-        node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node = Node("0.0.0.0", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
         node.start()
         node.join_network([])
         node.call_ping(target.uuid, target.ip, target.port)
@@ -178,7 +178,7 @@ class Kakarot():
 
     def do_find_node(self, state):
         print(state.target)
-        node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node = Node("0.0.0.0", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
         node.start()
 
         if (peer := self._parse_id(state.bootstrap)) == None:
@@ -193,7 +193,7 @@ class Kakarot():
         print("done")
 
     def do_find_key(self, state):
-        node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node = Node("0.0.0.0", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
         node.start()
         if (peer := self._parse_id(state.bootstrap)) == None:
             return
@@ -203,14 +203,14 @@ class Kakarot():
         node.stop()
 
     def do_store(self, state):
-        node = Node("127.0.0.1", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node = Node("0.0.0.0", state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
         node.start()
         time.sleep(1)
         if state.bootstrap:
             if (peer := self._parse_id(state.bootstrap)) == None:
                 return
             node.join_network([peer])
-            node.call_store(state.value, key_str=state.key)
+            node.call_store(state.key, state.value)
             # do stuff
         node.stop()
 

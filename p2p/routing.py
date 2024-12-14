@@ -10,7 +10,8 @@ from p2p.peer import Peer
 
 
 class TableTraverser():
-    """ Traverse table in two directions and return next/prev peer (sorted by distance). """
+    """ Traverse table in two directions and return next/prev peer (sorted by distance).
+        This is not exactly a pretty class but it works. """
     def __init__(self, table: "RouteTable", origin: Peer, keyspace: int, start_peer: Optional[Peer]=None) -> None:
         self._table = table
         self._keyspace = keyspace
@@ -43,10 +44,9 @@ class TableTraverser():
             if not bucket.is_empty():
                 return bucket._index
 
-
-    def next(self, default=None):
+    def next(self, default=None, sorted=True):
         bucket = self._table.buckets[self._last_bucket_i]
-        peers = bucket.get_sorted(self._origin.uuid)
+        peers = bucket.get_sorted(self._origin.uuid) if sorted else bucket._peers
         peer = None
 
         while not peer:
@@ -58,15 +58,15 @@ class TableTraverser():
                     return default   # StopIteration
 
                 bucket = self._table.buckets[next_bucket_i]
-                peers = bucket.get_sorted(self._origin.uuid)
+                peers = bucket.get_sorted(self._origin.uuid) if sorted else bucket._peers
                 self._last_peer_i = -1
                 self._last_bucket_i = next_bucket_i
 
         return peer
 
-    def prev(self, default=None):
+    def prev(self, default=None, sorted=True):
         bucket = self._table.buckets[self._last_bucket_i]
-        peers = bucket.get_sorted(self._origin.uuid)
+        peers = bucket.get_sorted(self._origin.uuid) if sorted else bucket._peers
         peer = None
 
         while not peer:
@@ -78,11 +78,12 @@ class TableTraverser():
                     return default   # StopIteration
 
                 bucket = self._table.buckets[prev_bucket_i]
-                peers = bucket.get_sorted(self._origin.uuid)
+                peers = bucket.get_sorted(self._origin.uuid) if sorted else bucket._peers
                 self._last_peer_i = bucket.get_size() 
                 self._last_bucket_i = prev_bucket_i
 
         return peer
+
 
 class Bucket():
     def __init__(self, index: int, keyspace: int, size: int, ping_callback: Callable) -> None:
@@ -182,7 +183,7 @@ class RouteTable():
     bits in the keyspace.
     eg: 4Bit keyspace has 4 levels
 
-                left 0, right 1
+             left 0, right 1
 
     LEVEL 1        /\
     LEVEL 2    /\      /\
@@ -196,9 +197,9 @@ class RouteTable():
     8 BIT table
     peer_uuid   = 0b01000100
     origin_uuid = 0b01011100
-              ---------- XOR
+                  ---------- XOR
     common      = 0b00011000
-                   ^
+                      ^
     This example has 3 msb's.
     This means that we have 3 matching steps down the binary tree.
     We put this peer in bucket 3.
@@ -209,7 +210,6 @@ class RouteTable():
 
     The further away we are from the origin node, the more space a bucket covers.
     That means that the closer we are to origin, the more expertise we have of our surroundings
-
     """
 
     def __init__(self, keyspace: int, bucket_size: int, ping_callback: Callable) -> None:
@@ -261,22 +261,6 @@ class RouteTable():
                     n += 1
             return out
 
-    def find_next_neighbour(self, peer: Peer, origin_uuid: int):
-        """ Find the next peer from <peer> """
-        bucket = peer.find_significant_common_bits(origin_uuid, self._keyspace)
-
-        # Search forwards for next known peer
-        for b in range(bucket, self._keyspace, 1):
-
-            print(f"{b} unsorted:", self.buckets[b])
-            print(f"{b} sorted:  ", self.buckets[b].get_sorted(origin_uuid))
-
-            for p in self.buckets[b].get_sorted(origin_uuid):
-                if p.uuid > peer.uuid:
-                    return p
-            else:
-                continue
-
     def insert_peer(self, peer: Peer, origin_uuid: int):
         """ We have a least seen eviction policy and we prefer old peers because they tend to
             be reliable than new peers. Apparently research concluded that peers that have been
@@ -292,3 +276,5 @@ class RouteTable():
     def remove_peer(self, peer: Peer, origin_uuid: int):
         bucket = peer.find_significant_common_bits(origin_uuid, self._keyspace)
         self.buckets[bucket].remove_peer(peer)
+        info("routetable", "remove_peer", f"removed: {peer}")
+

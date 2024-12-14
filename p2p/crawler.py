@@ -157,9 +157,6 @@ class CrawlerBaseClass():
         # Keep track of closest Peers inbetween iterations so we can detect if newer peers have been found
         self._prev_closest: Optional[Peer] = None
 
-    def handle_peers(self, peers: list[Peer]):
-        """ Must be implemented when subclassed. """
-
     def _find(self):
         self._round += 1
 
@@ -208,6 +205,8 @@ class NodeCrawler(CrawlerBaseClass):
 
             if new_peers := self.request_nodes_from_peer(peer):
                 for p in new_peers:
+                    if p.uuid == self._origin.uuid:
+                        continue
                     self.shortlist.add(p)
 
     def find(self):
@@ -216,7 +215,7 @@ class NodeCrawler(CrawlerBaseClass):
             peers = self._find()
             self.handle_peers(peers)
 
-        print(f"Finished in {self._round} rounds, connections: {self._connections}")
+        #print(f"Finished in {self._round} rounds, connections: {self._connections}")
         return self.shortlist.get_results()
 
 
@@ -263,13 +262,15 @@ class ValueCrawler(CrawlerBaseClass):
                     return result
 
                 for p in result:
+                    if p.uuid == self._origin.uuid:
+                        continue
                     self.shortlist.add(p)
 
     def find(self):
         while self.shortlist.has_uncontacted_peers():
             peers = self._find()
             if value := self.handle_peers(peers):
-                print(f"Finished in {self._round} rounds, connections: {self._connections}")
+                #print(f"Finished in {self._round} rounds, connections: {self._connections}")
                 return value
 
-        print(f"Failed to find value in {self._round} rounds, connections: {self._connections}")
+        error("valuecrawler", "find", f"Failed to find value in {self._round} rounds, using {self._connections} connections.")
