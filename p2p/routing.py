@@ -9,6 +9,81 @@ from p2p.store import Store
 from p2p.peer import Peer
 
 
+class TableTraverser():
+    """ Traverse table in two directions and return next/prev peer (sorted by distance). """
+    def __init__(self, table: "RouteTable", origin: Peer, keyspace: int, start_peer: Optional[Peer]=None) -> None:
+        self._table = table
+        self._keyspace = keyspace
+
+        # This is the peer that distances are measured from
+        self._origin = origin
+
+        if start_peer:
+            self._last_bucket_i = origin.find_significant_common_bits(start_peer.uuid, keyspace)
+            self._last_peer_i = self._table.buckets[self._last_bucket_i].get_sorted(origin.uuid).index(start_peer)
+        else:
+            self._last_bucket_i = 0
+            self._last_peer_i = -1
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if not (p := self.next()):
+            raise StopIteration
+        return p
+
+    def get_next_non_empty_bucket(self):
+        for bucket in self._table.buckets[self._last_bucket_i+1:]:
+            if not bucket.is_empty():
+                return bucket._index
+
+    def get_prev_non_empty_bucket(self):
+        for bucket in reversed(self._table.buckets[:self._last_bucket_i]):
+            if not bucket.is_empty():
+                return bucket._index
+
+
+    def next(self, default=None):
+        bucket = self._table.buckets[self._last_bucket_i]
+        peers = bucket.get_sorted(self._origin.uuid)
+        peer = None
+
+        while not peer:
+            if self._last_peer_i+1 < bucket.get_size():
+                self._last_peer_i += 1
+                peer = peers[self._last_peer_i]
+            else:
+                if not (next_bucket_i := self.get_next_non_empty_bucket()):
+                    return default   # StopIteration
+
+                bucket = self._table.buckets[next_bucket_i]
+                peers = bucket.get_sorted(self._origin.uuid)
+                self._last_peer_i = -1
+                self._last_bucket_i = next_bucket_i
+
+        return peer
+
+    def prev(self, default=None):
+        bucket = self._table.buckets[self._last_bucket_i]
+        peers = bucket.get_sorted(self._origin.uuid)
+        peer = None
+
+        while not peer:
+            if self._last_peer_i-1 >= 0:
+                self._last_peer_i -= 1
+                peer = peers[self._last_peer_i]
+            else:
+                if (prev_bucket_i := self.get_prev_non_empty_bucket()) == None:
+                    return default   # StopIteration
+
+                bucket = self._table.buckets[prev_bucket_i]
+                peers = bucket.get_sorted(self._origin.uuid)
+                self._last_peer_i = bucket.get_size() 
+                self._last_bucket_i = prev_bucket_i
+
+        return peer
+
 class Bucket():
     def __init__(self, index: int, keyspace: int, size: int, ping_callback: Callable) -> None:
 
@@ -47,13 +122,18 @@ class Bucket():
         """ Look in bucket for a peer that matches all key:value pairs of <peer> """
         return next((p for p in self._peers if p.uuid == peer.uuid), None)
 
+    def is_empty(self):
+        return not len(self._peers)
+
+    def get_size(self):
+        return len(self._peers)
+
     def get_random_peer(self):
         if len(self._peers) > 0:
             return random.choice(self._peers)
 
     def is_full(self):
         return len(self._peers) >= self._size
-
 
     def insert_peer(self, peer: Peer, origin_uuid: int):
         """ We have a least seen eviction policy and we prefer old peers because they tend to

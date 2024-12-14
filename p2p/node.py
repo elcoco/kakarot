@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 import time
 import socket
+import inspect
 
 from p2p.network.server import Server
 from p2p.network.message import PingMsg, StoreMsg, FindNodeMsg, FindValueMsg, ResponseMsg, ErrorMsg
@@ -14,7 +15,7 @@ from p2p.network.utils import send_request
 from p2p.periodical import MaintenanceThread, TaskDeleteExpired, TaskRepublishKeys, TaskRefreshBuckets
 
 from p2p.store import Store
-from p2p.routing import RouteTable
+from p2p.routing import RouteTable, TableTraverser
 from p2p.crawler import ShortList, NodeCrawler, ValueCrawler
 from p2p.peer import Peer
 
@@ -186,6 +187,8 @@ class Node(Server):
             If target_peer != None, don't search, just ask only this peer.
             Returns: True if at least one of them was stored succesfully. """
 
+        print("Called by", inspect.stack()[1][3])
+
         if key_str:
             key_uuid = self._store.get_hash(key_str)
         elif key_uuid:
@@ -231,28 +234,38 @@ class Node(Server):
             TO prevent a shitton of messages on the network: only publish keys if we are closer
             to the peer than all other peers that we know of.
             Also there is a large chance that we know more keys than any other node """
-        # TODO: implement above optimization
         origin = Peer(self._uuid, self._ip, self._port)
 
+        # Only welcome new peers
         if self._table.has_peer(peer, origin):
             return
 
-
+        # Only republish k:v if we are closer to the peer than anyone else
         if closest_known := self._table.get_closest_nodes(origin, peer.uuid, 1):
             if origin.get_distance(peer.uuid) > closest_known[0].get_distance(peer.uuid):
                 return
 
-            range_end = closest_known[0].uuid
+        # Insert peer in table because otherwise TableTraverser wouldn't find it.
+        self._table.insert_peer(peer, self._uuid)
 
-            # We need to get next peer not previous peer. If get_closest_nodes() returned a peer
-            # with a smaller UUID, this means there are no peers ahead
-            if range_end < peer.uuid:
-                range_end = 2 ** self._keyspace
+        # Peer's keyspace stretches from it's own UUID to the UUID of the next peer.
+        # Get closest next_peer from <peer> that we know of to mark an end range.
+        # If not found, this peer owns the keyspace until the end of global keyspace
+        traverser = TableTraverser(self._table, origin, self._keyspace, start_peer=peer)
+        if next_peer := traverser.next():
+            range_end = next_peer.uuid
+        else:
+            range_end = 2 ** self._keyspace
 
-            print(f"WELCOME NEW PEER: {peer}, Keys in range: {peer.uuid} - {range_end} =", self._store.find_kv_in_range(peer.uuid, range_end))
+        # We should not be in the same range because that would make us owner of the k:v
+        if peer.uuid < origin.uuid < range_end:
+            print("We are in range, cancel")
+            return
 
-            for item in self._store.find_kv_in_range(peer.uuid, range_end):
-                self.call_store(item.value, key_uuid=item.uuid, target_peer=peer)
+        print(f"WELCOME NEW PEER: {peer}, Keys in range: {peer.uuid} - {range_end} =", self._store.find_kv_in_range(peer.uuid, range_end))
+
+        for item in self._store.find_kv_in_range(peer.uuid, range_end):
+            self.call_store(item.value, key_uuid=item.uuid, target_peer=peer)
 
     def buckets_refresh(self, interval: int):
         """ Perform a bucket refresh for stale buckets (buckets that haven't seen a node lookup in <interval> seconds) """
@@ -286,7 +299,6 @@ class Node(Server):
 
     def _handle_new_peer(self, peer: Peer):
         self._welcome_peer(peer)
-        self._table.insert_peer(peer, self._uuid)
 
     def run(self):
         # Do some periodic tasks
