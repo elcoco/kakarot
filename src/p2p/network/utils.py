@@ -4,7 +4,7 @@ import socket
 from core.utils import debug, info, error
 from p2p.network.message import MsgError
 from p2p.network.message import ResponseMsg
-from p2p.network.bencode import BencDecodeError
+from p2p.network.bencoding import BencDecodeError
 
 
 MSG_LENGTH = 1024

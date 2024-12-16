@@ -108,9 +108,11 @@ class Bucket():
 
         for i, peer in enumerate(self._peers):
             if i == 0:
-                out.append(f"{header} {i:2}: {str(peer)}")
+                out.append(f"{header} {i:2}: {peer.to_str(self._keyspace)}")
+                #out.append(f"{header} {i:2}: {peer}")
             else:
-                out.append(f"{indent} {i:2}: {str(peer)}")
+                out.append(f"{indent} {i:2}: {peer.to_str(self._keyspace)}")
+                #out.append(f"{indent} {i:2}: {peer}")
         return "\n".join(out)
 
     def needs_refresh(self, interval: int):
@@ -277,4 +279,3 @@ class RouteTable():
         bucket = peer.find_significant_common_bits(origin_uuid, self._keyspace)
         self.buckets[bucket].remove_peer(peer)
         info("routetable", "remove_peer", f"removed: {peer}")
-

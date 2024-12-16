@@ -5,6 +5,8 @@ from p2p.network.message import PingMsg
 
 from p2p.network.utils import send_request
 
+from core.utils import id_to_str
+
 
 @dataclass
 class Peer():
@@ -20,6 +22,9 @@ class Peer():
     def __repr__(self):
         #return f"{self.uuid:5} @ {self.ip}:{self.port:5}"
         return f"{self.uuid:016b} @ {self.ip}:{self.port:5}"
+
+    def to_str(self, keyspace: int):
+        return id_to_str(self.uuid, self.ip, self.port, keyspace)
 
     def to_dict(self):
         return { "uuid" : self.uuid,

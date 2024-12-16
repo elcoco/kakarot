@@ -44,7 +44,7 @@ class Store():
         self._keyspace = keyspace
 
         # here we store {hashed_key : value} pairs
-        self._store = []
+        self._store: list[StoreItem] = []
 
         self._ttl = ttl
         self._republish_interval = republish_interval
@@ -72,29 +72,17 @@ class Store():
     def get_items(self):
         return self._store
 
-    def get_hash(self, data: str):
-        nbytes = int(self._keyspace/8)
-        return int.from_bytes(hashlib.sha256(data.encode()).digest()[:nbytes])
+    def put(self, uuid: int, v: str):
+        assert type(uuid) == int
+        assert uuid >= 0 and uuid < 2**self._keyspace
 
-    def put_by_uuid(self, k: int, v: str):
-        assert type(k) == int
-        assert k >= 0 and k < 2**self._keyspace
-
-        if item := self._lookup(k):
+        if item := self._lookup(uuid):
             item.value = v
         else:
-            self._store.append(StoreItem(k, v, self._republish_interval, self._ttl))
+            self._store.append(StoreItem(uuid, v, self._republish_interval, self._ttl))
 
-    def put_by_str(self, k: str, v: str):
-        assert type(k) == str
-        self.put_by_uuid(self.get_hash(k), v)
-
-    def get_by_uuid(self, k: int):
-        assert type(k) == int
-        assert k >= 0 and k < 2**self._keyspace
-        if item := self._lookup(k):
+    def get(self, uuid: int):
+        assert type(uuid) == int
+        assert uuid >= 0 and uuid < 2**self._keyspace
+        if item := self._lookup(uuid):
             return item.value
-
-    def get_by_str(self, k: str):
-        assert type(k) == str
-        return self.get_by_uuid(self.get_hash(k))

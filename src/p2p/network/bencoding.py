@@ -51,9 +51,9 @@ class Bencoder():
 
     def _parse_dict(self, data: str) -> tuple[dict,int]:
         """ Bencoding dict format: d<key><value><key>...e """
-        out = {}
-        lst = []
-        pos = 1
+        out: dict = {}
+        lst: list = []
+        pos: int = 1
 
         if data[0] != "d":
             raise BencDecodeError(f"Failed to parse dict, malformed: {data}")
@@ -147,6 +147,6 @@ class Bencoder():
                     out += f"{len(k)}:{k}{self.dumps(v)}"
                 out += "e"
             case _:
-                raise BencEncodeError(f"Failed to encode, unknown type: {type(v)}")
+                raise BencEncodeError(f"Failed to encode, unknown type: {data}")
 
         return out

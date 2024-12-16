@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+
+import time
+import logging
+import argparse
+import sys
+
+from p2p.node import Node
+from p2p.peer import Peer
+
+from core import Config
+from core.utils import debug, info, error
+
+
+logger = logging.getLogger("kakarot")
+
+LISTEN_IP = "0.0.0.0"
+
+
+class Kakarot():
+    def _parse_args(self, state):
+        default_port = 1024
+        default_bucket_size = 20
+        default_keyspace = 16
+        default_alpha = 3
+
+        parser = argparse.ArgumentParser(prog='Kakarot', usage='%(prog)s [OPTIONS]', description='P2p stuff',
+                 formatter_class=lambda prog: argparse.HelpFormatter(prog,max_help_position=42))
+
+        subparsers = parser.add_subparsers(dest="command")
+
+        run = subparsers.add_parser("run", help="run node")
+        run.add_argument('-a', '--alpha',  help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=default_alpha)
+        run.add_argument('-b', '--bucket-size',  help='amount of peers per bucket', metavar="SIZE", type=int, default=default_bucket_size)
+        run.add_argument('-D', '--debug', help='enable debugging', action='store_true')
+        run.add_argument('-k', '--keyspace',  help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
+        run.add_argument('-p', '--port',  help='listen port', metavar="PORT", type=int, default=default_port)
+        run.add_argument('-u', '--uuid',  help='uuid', metavar="UUID", type=int)
+        run.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str, required=True)
+
+        ping = subparsers.add_parser("ping",     help="run node, perform a ping and exit")
+        ping.add_argument('-a', '--alpha',       help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=default_alpha)
+        ping.add_argument('-b', '--bucket-size', help='amount of peers per bucket', metavar="SIZE", type=int, default=default_bucket_size)
+        ping.add_argument('-D', '--debug',       help='enable debugging', action='store_true')
+        ping.add_argument('-k', '--keyspace',    help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
+        ping.add_argument('-p', '--port',        help='listen port', metavar="PORT", type=int, default=default_port)
+        ping.add_argument('-t', '--target',      help='target address: <uuid@ip:port>', metavar="ADDRESS", type=str, required=True)
+        ping.add_argument('-u', '--uuid',        help='uuid', metavar="UUID", type=int)
+
+        find_node = subparsers.add_parser("find_node", help="find node and exit")
+        find_node.add_argument('-a', '--alpha',       help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=default_alpha)
+        find_node.add_argument('-b', '--bucket-size', help='amount of peers per bucket', metavar="SIZE", type=int, default=default_bucket_size)
+        find_node.add_argument('-D', '--debug',       help='enable debugging', action='store_true')
+        find_node.add_argument('-k', '--keyspace',    help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
+        find_node.add_argument('-p', '--port',        help='listen port', metavar="PORT", type=int, default=default_port)
+        find_node.add_argument('-t', '--target',      help='target uuid', metavar="ADDRESS", action="append", type=int, required=True)
+        find_node.add_argument('-u', '--uuid',        help='uuid', metavar="UUID", type=int)
+        find_node.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str, required=True)
+
+        store = subparsers.add_parser("store", help="store a key value pair")
+        store.add_argument('-a', '--alpha',       help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=default_alpha)
+        store.add_argument('-b', '--bucket-size', help='amount of peers per bucket', metavar="SIZE", type=int, default=default_bucket_size)
+        store.add_argument('-D', '--debug',       help='enable debugging', action='store_true')
+        store.add_argument('-k', '--keyspace',    help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
+        store.add_argument('-p', '--port',        help='listen port', metavar="PORT", type=int, default=default_port)
+        store.add_argument('-u', '--uuid',        help='uuid', metavar="UUID", type=int)
+        store.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str, required=True)
+        store.add_argument('-K', '--key',         help='key of data', metavar="KEY", type=str, required=True)
+        store.add_argument('-V', '--value',       help='value of data', metavar="VALUE", type=str, required=True)
+
+        find_key = subparsers.add_parser("find_key", help="get value by key")
+        find_key.add_argument('-a', '--alpha',       help='amount of concurrent peer lookups', metavar="AMOUNT", type=int, default=default_alpha)
+        find_key.add_argument('-b', '--bucket-size', help='amount of peers per bucket', metavar="SIZE", type=int, default=default_bucket_size)
+        find_key.add_argument('-D', '--debug',       help='enable debugging', action='store_true')
+        find_key.add_argument('-k', '--keyspace',    help='size of network in bits', metavar="SIZE", type=int, default=default_keyspace)
+        find_key.add_argument('-p', '--port',        help='listen port', metavar="PORT", type=int, default=default_port)
+        find_key.add_argument('-u', '--uuid',        help='uuid', metavar="UUID", type=int)
+        find_key.add_argument('-B', '--bootstrap',   help='bootstrap node address <uuid@ip:port>', metavar="ADDRESS", type=str, required=True)
+        find_key.add_argument('-K', '--key',         help='key of data', metavar="KEY", type=str, required=True)
+
+        args = parser.parse_args()
+        
+        state.do_run = False
+        state.do_ping = False
+        state.do_find_node = False
+        state.do_store = False
+        state.do_find_key = False
+
+        if args.command == "run":
+            state.do_run      = True
+            state.port        = args.port
+            state.keyspace    = args.keyspace
+            state.bucket_size = args.bucket_size
+            state.uuid        = args.uuid
+            state.alpha       = args.alpha
+            state.bootstrap   = args.bootstrap
+        elif args.command == "ping":
+            state.do_ping     = True
+            state.port        = args.port
+            state.keyspace    = args.keyspace
+            state.bucket_size = args.bucket_size
+            state.uuid        = args.uuid
+            state.alpha       = args.alpha
+            state.target      = args.target
+        elif args.command == "find_node":
+            state.do_find_node = True
+            state.port         = args.port
+            state.keyspace     = args.keyspace
+            state.bucket_size  = args.bucket_size
+            state.uuid         = args.uuid
+            state.alpha        = args.alpha
+            state.target       = args.target
+            state.bootstrap    = args.bootstrap
+        elif args.command == "store":
+            state.do_store     = True
+            state.port         = args.port
+            state.keyspace     = args.keyspace
+            state.bucket_size  = args.bucket_size
+            state.uuid         = args.uuid
+            state.alpha        = args.alpha
+            state.bootstrap    = args.bootstrap
+            state.key          = args.key
+            state.value        = args.value
+        elif args.command == "find_key":
+            state.do_find_key  = True
+            state.port         = args.port
+            state.keyspace     = args.keyspace
+            state.bucket_size  = args.bucket_size
+            state.uuid         = args.uuid
+            state.alpha        = args.alpha
+            state.bootstrap    = args.bootstrap
+            state.key          = args.key
+        else:
+            parser.print_help()
+            sys.exit()
+
+        if args.debug:
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.INFO)
+
+    def _parse_id(self, id: str):
+        try:
+            uuid, rest = id.split("@")
+            ip, port  = rest.split(":")
+            return Peer(int(uuid), ip, int(port))
+            #return Peer(int(f"0x{uuid}", 16), ip, int(port))
+        except ValueError as e:
+            error("kakarot", "do_ping", f"Failed to parse target: {id}, {e}")
+            return
+
+    def do_run(self, state):
+        node = Node(LISTEN_IP, state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node.start()
+
+        if peer := self._parse_id(state.bootstrap):
+            node.join_network([peer])
+
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            node.stop()
+
+    def do_ping(self, state):
+        if (target := self._parse_id(state.target)) == None:
+            return
+
+        node = Node(LISTEN_IP, state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node.start()
+        node.join_network([])
+        node.call_ping(target.uuid, target.ip, target.port)
+        node.stop()
+
+    def do_find_node(self, state):
+        print(state.target)
+        node = Node(LISTEN_IP, state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node.start()
+
+        if peer := self._parse_id(state.bootstrap):
+            node.join_network([peer])
+            for target in state.target:
+                node.call_find_node(target)
+        node.stop()
+
+    def do_find_key(self, state):
+        node = Node(LISTEN_IP, state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node.start()
+        if peer := self._parse_id(state.bootstrap):
+            node.join_network([peer])
+            node.call_find_value(state.key)
+        node.stop()
+
+    def do_store(self, state):
+        node = Node(LISTEN_IP, state.port, state.keyspace, state.bucket_size, state.alpha, uuid=state.uuid)
+        node.start()
+        if peer := self._parse_id(state.bootstrap):
+            node.join_network([peer])
+            node.call_store(state.key, state.value)
+        node.stop()
+
+    def run(self):
+        # program state, mainly changed by command line arguments
+        state = Config()
+        self._parse_args(state)
+
+        if state.do_run:
+            self.do_run(state)
+        elif state.do_ping:
+            self.do_ping(state)
+        elif state.do_find_node:
+            self.do_find_node(state)
+        elif state.do_find_key:
+            self.do_find_key(state)
+        elif state.do_store:
+            self.do_store(state)
+
+
+if __name__ == "__main__":
+    kakarot = Kakarot()
+    kakarot.run()

@@ -15,13 +15,13 @@ class ShortList():
         source: https://xlattice.sourceforge.net/components/protocol/kademlia/specs.html#FIND_VALUE
         """
         # List of uncontacted + contacted peers
-        self._nearest = []
+        self._nearest: list[Peer] = []
 
         # Contacted peers
-        self._contacted = []
+        self._contacted: list[Peer] = []
 
         # Peers that did not respond end up here
-        self._rejected = []
+        self._rejected: list[Peer] = []
 
         self._target_uuid = target_uuid
 

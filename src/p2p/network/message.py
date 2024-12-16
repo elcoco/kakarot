@@ -6,7 +6,7 @@ import string
 import json
 
 from core.utils import debug, info, error
-from p2p.network.bencode import Bencoder
+from p2p.network.bencoding import Bencoder
 
 
 class MsgError(Exception): pass
@@ -66,6 +66,15 @@ class MsgBaseClass(Bencoder):
 
     def validate(self):
         """ Needs to be implemented when subclassed """
+
+    def parse_id(self, id: str) -> tuple[int,str,int]:
+        """ Parse an id formatted as: <UUID>@<IP>:<PORT> """
+        try:
+            uuid, rest = id.split("@")
+            ip, port  = rest.split(":")
+            return int(uuid, 16), ip, int(port)
+        except ValueError as e:
+            raise ValueError(f"Failed to parse id: {id}, {e}")
 
     @property
     def msg_type(self):

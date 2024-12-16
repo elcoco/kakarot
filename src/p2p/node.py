@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import time
 import socket
 import inspect
+import hashlib
 
 from p2p.network.server import Server
 from p2p.network.message import PingMsg, StoreMsg, FindNodeMsg, FindValueMsg, ResponseMsg, ErrorMsg
@@ -19,6 +20,7 @@ from p2p.crawler import ShortList, NodeCrawler, ValueCrawler
 from p2p.peer import Peer
 
 from core.utils import debug, info, error
+from core.utils import id_to_str
 
 # TODO: cache/republish store expiration. How to detect if incoming is cache or republish
 # TODO: do the split buckets thing
@@ -94,10 +96,16 @@ class Node(Server):
         self._ready_status = False
 
     def __repr__(self):
-        return f"NODE: {self._uuid:016b} {self._uuid}@{self._ip}:{self._port}"
+        #return f"NODE: {self._uuid:{self._keyspace}}@{self._ip}:{self._port}"
+        #return f"NODE: {self._uuid:0{self._keyspace}b} {self._uuid}@{self._ip}:{self._port}"
+        return "NODE: " + id_to_str(self._uuid, self._ip, self._port, self._keyspace)
 
     def _create_uuid(self):
         return random.randrange(0, (2**self._keyspace)-1)
+
+    def get_hash(self, data: str):
+        nbytes: int = int(self._keyspace/8)
+        return int.from_bytes(hashlib.sha256(data.encode()).digest()[:nbytes])
 
     def _introduce_new_peer(self, peer: Peer):
         """ We need to check if there's a k:v in store that matches the new_peer's range.
@@ -147,7 +155,7 @@ class Node(Server):
         origin = Peer(self._uuid, self._ip, self._port)
 
         for peer in peers:
-            info("node", "bootstrap", str(peer))
+            info("node", "bootstrap", peer.to_str(self._keyspace))
             if peer == origin:
                 error("node", "bootstrap", "not bootstrapping from ourself!")
                 continue
@@ -167,6 +175,7 @@ class Node(Server):
         """ Called by Server(), respond to incoming PING query message """
         # TODO: Check if we have to save the peer in the routing table
         # echo -n "d1:t2:xx1:y1:q1:q4:ping1:ad2:idd4:uuidi666e2:ip9:127.0.0.14:porti666eeee" | ncat localhost 12345
+        info("node", "rpc_ping", f"pong!")
         sender = Peer(msg.sender_uuid, msg.sender_ip, msg.sender_port)
         self._handle_new_peer(sender)
         return ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
@@ -186,7 +195,7 @@ class Node(Server):
         """ Called by Server(), respond to incoming STORE query message """
         sender = Peer(msg.sender_uuid, msg.sender_ip, msg.sender_port)
         info("node", "rpc_store", f"storing: {msg.key} : {msg.value} from {sender}")
-        self._store.put_by_uuid(msg.key, msg.value)
+        self._store.put(msg.key, msg.value)
         self._handle_new_peer(sender)
         return ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
 
@@ -199,7 +208,7 @@ class Node(Server):
         self._handle_new_peer(sender)
         res = ResponseMsg(transaction_id=msg.transaction_id, uuid=self._uuid, ip=self._ip, port=self._port)
 
-        if value := self._store.get_by_uuid(msg.key):
+        if value := self._store.get(msg.key):
             res.return_values = { MsgKey.VALUE : value }
             return res
         else:
@@ -215,7 +224,7 @@ class Node(Server):
 
         msg_req = PingMsg(uuid=origin.uuid, ip=origin.ip, port=origin.port)
         if (msg_res := send_request(target.ip, target.port, msg_req)):
-            #info("peer", "ping", f"response time: {msg_res.response_time}")
+            info("node", "ping", f"response time: {msg_res.response_time}")
             return msg_res.response_time
 
     def call_find_node(self, target_uuid: int):
@@ -229,7 +238,7 @@ class Node(Server):
             Similar to call_find_node() but if a key is found, stop search immediately.
             If key is found, store key at closest node to <K> that doesn't have the key stored. """
         origin = Peer(self._uuid, self._ip, self._port)
-        key_uuid = self._store.get_hash(k)
+        key_uuid = self.get_hash(k)
         boot_peers = self._table.get_closest_nodes(origin, key_uuid, amount=self._alpha)
         crawler = ValueCrawler(self._bucket_size, self._alpha, self._table, origin, boot_peers, key_uuid)
         #if value := crawler.find():
@@ -248,7 +257,7 @@ class Node(Server):
             Returns: True if at least one of them was stored succesfully. """
 
         if key_str:
-            key_uuid = self._store.get_hash(key_str)
+            key_uuid = self.get_hash(key_str)
         elif key_uuid:
             ...
         else:
@@ -281,7 +290,8 @@ class Node(Server):
         self._call_store(v, key_str=k)
         # We need to take responsibility for keeping this k:v alive so we're going
         # to resend it every n seconds. The thread watching the originator_store takes care of that.
-        self._provider_store.put_by_str(k, v)
+        key_uuid = self.get_hash(k)
+        self._provider_store.put(key_uuid, v)
 
     def buckets_refresh(self, interval: int):
         """ Perform a bucket refresh for stale buckets (buckets that haven't seen a node lookup in <interval> seconds) """
@@ -309,7 +319,7 @@ class Node(Server):
         t.start()
 
         # This starts blocking server that listens for incoming connections
-        info("node", "run", f"starting listener")
+        info("node", "run", f"starting node: {self}")
         self.listen()
 
         t.stop()

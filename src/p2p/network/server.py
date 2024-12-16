@@ -7,7 +7,7 @@ import time
 
 from core.utils import debug, info, error
 
-from p2p.network.bencode import Bencoder, BencDecodeError
+from p2p.network.bencoding import Bencoder, BencDecodeError
 from p2p.network.message import FindValueMsg, MsgKey, ErrCode, MsgType, QueryType
 from p2p.network.message import PingMsg, StoreMsg, FindNodeMsg, FindValueMsg, ResponseMsg, ErrorMsg
 from p2p.network.message import MsgError
